@@ -2,7 +2,7 @@
 use crate::engine::{log, Shared};
 use coolrgb_core::ipc::{Request, Response, PIPE_NAME};
 use std::io::{BufRead, BufReader, Write};
-use std::os::windows::io::FromRawHandle;
+use std::os::windows::io::{AsRawHandle, FromRawHandle};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use windows_sys::Win32::Foundation::{GetLastError, LocalFree, ERROR_PIPE_CONNECTED, INVALID_HANDLE_VALUE};
@@ -19,7 +19,8 @@ fn wide(s: &str) -> Vec<u16> {
 }
 
 /// `on_request` handles requests that need the UI thread (quit, autostart).
-pub fn serve(sh: Arc<Shared>, on_request: impl Fn(&Request) + Send + 'static) {
+pub fn serve(sh: Arc<Shared>, on_request: impl Fn(&Request) + Send + Sync + 'static) {
+    let on_request = Arc::new(on_request);
     std::thread::Builder::new()
         .name("pipe".into())
         .stack_size(256 * 1024)
@@ -55,14 +56,21 @@ pub fn serve(sh: Arc<Shared>, on_request: impl Fn(&Request) + Send + 'static) {
                 let connected = unsafe { ConnectNamedPipe(h, std::ptr::null_mut()) } != 0
                     || unsafe { GetLastError() } == ERROR_PIPE_CONNECTED;
                 let file = unsafe { std::fs::File::from_raw_handle(h as _) };
-                if connected {
-                    handle(&sh, &file, &on_request);
-                    unsafe {
-                        FlushFileBuffers(h);
-                        DisconnectNamedPipe(h);
-                    }
+                if !connected {
+                    continue;
                 }
-                drop(file);
+                // One short-lived thread per client, so a stuck client can't block the next one.
+                let (sh, on_request) = (sh.clone(), on_request.clone());
+                let spawned = std::thread::Builder::new().stack_size(128 * 1024).spawn(move || {
+                    handle(&sh, &file, &*on_request);
+                    unsafe {
+                        FlushFileBuffers(file.as_raw_handle() as _);
+                        DisconnectNamedPipe(file.as_raw_handle() as _);
+                    }
+                });
+                if spawned.is_err() {
+                    log("pipe: could not spawn client thread");
+                }
             }
             if !sd.is_null() {
                 unsafe { LocalFree(sd) };
@@ -71,7 +79,7 @@ pub fn serve(sh: Arc<Shared>, on_request: impl Fn(&Request) + Send + 'static) {
         .unwrap();
 }
 
-fn handle(sh: &Shared, file: &std::fs::File, on_request: &impl Fn(&Request)) {
+fn handle(sh: &Shared, file: &std::fs::File, on_request: &(impl Fn(&Request) + ?Sized)) {
     let mut line = String::new();
     if BufReader::new(file).read_line(&mut line).is_err() {
         return;

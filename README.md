@@ -48,6 +48,8 @@ To remove it, run `scripts\uninstall.ps1` (add `-KeepSettings` to keep `%APPDATA
 
 ## Using it
 
+- **Lights on/off**: the switch in the header, or **Lights off** in the tray menu, turns every LED off
+  without losing your effects.
 - **Lighting**: brightness, plus one effect for all devices (Off, Static, Breathing, Rainbow, Wave).
   **Apply to** lets any device use its own effect.
 - **Fans**: a pump curve and a fans curve (all 6 fans), or fixed speeds. The temperature source can be

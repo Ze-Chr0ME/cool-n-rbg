@@ -22,6 +22,7 @@ const WM_QUIT_REQUEST: u32 = WM_APP + 2;
 const ID_OPEN: usize = 1;
 const ID_RESCAN: usize = 2;
 const ID_EXIT: usize = 3;
+const ID_LIGHTS: usize = 4;
 
 static HWND_MAIN: AtomicIsize = AtomicIsize::new(0);
 static TASKBAR_CREATED: AtomicIsize = AtomicIsize::new(0);
@@ -92,6 +93,9 @@ fn show_menu(hwnd: HWND) {
     unsafe {
         let menu = CreatePopupMenu();
         AppendMenuW(menu, MF_STRING, ID_OPEN, wide("Open Cool'n RGB").as_ptr());
+        #[allow(static_mut_refs)]
+        let on = SHARED.as_ref().is_some_and(|sh| sh.config.lock().unwrap().lights_on);
+        AppendMenuW(menu, MF_STRING | if on { MF_UNCHECKED } else { MF_CHECKED }, ID_LIGHTS, wide("Lights off").as_ptr());
         AppendMenuW(menu, MF_STRING, ID_RESCAN, wide("Rescan devices").as_ptr());
         AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
         AppendMenuW(menu, MF_STRING, ID_EXIT, wide("Exit").as_ptr());
@@ -124,6 +128,18 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     #[allow(static_mut_refs)]
                     if let Some(sh) = SHARED.as_ref() {
                         sh.rescan_gen.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                ID_LIGHTS => {
+                    #[allow(static_mut_refs)]
+                    if let Some(sh) = SHARED.as_ref() {
+                        let mut c = sh.config.lock().unwrap();
+                        c.lights_on = !c.lights_on;
+                        if let Err(e) = c.save() {
+                            engine::log(&format!("saving config: {e}"));
+                        }
+                        drop(c);
+                        sh.config_gen.fetch_add(1, Ordering::Release);
                     }
                 }
                 ID_EXIT => {

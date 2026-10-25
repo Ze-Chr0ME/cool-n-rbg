@@ -411,6 +411,14 @@ impl eframe::App for App {
         egui::Panel::top("top").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.heading(RichText::new("Cool'n RGB").strong());
+                if let Some(cfg) = self.cfg.as_mut() {
+                    ui.add_space(16.0);
+                    let label = if cfg.lights_on { "Lights: on" } else { "Lights: off" };
+                    if ui.selectable_label(cfg.lights_on, label).clicked() {
+                        cfg.lights_on = !cfg.lights_on;
+                        self.dirty = true;
+                    }
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| match &status {
                     Some(s) => {
                         ui.label(RichText::new(format!("service running · {:.1} MB", s.working_set_kb as f32 / 1024.0)).weak());

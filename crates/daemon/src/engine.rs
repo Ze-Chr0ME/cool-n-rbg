@@ -93,7 +93,11 @@ fn info(id: &str, name: &str, leds: usize, ok: bool, detail: impl Into<String>) 
 }
 
 fn brightness(cfg: &Config) -> f32 {
-    cfg.brightness.min(100) as f32 / 100.0
+    if cfg.lights_on {
+        cfg.brightness.min(100) as f32 / 100.0
+    } else {
+        0.0
+    }
 }
 
 /// Fan/pump duty with critical-temperature override and floor. Missing sensors mean full speed.
@@ -187,7 +191,7 @@ fn commander_thread(sh: Arc<Shared>) {
             }
             None => false,
         };
-        let effect = cfg.effect_for(CC_ID).clone();
+        let effect = if cfg.lights_on { cfg.effect_for(CC_ID).clone() } else { Effect::Off };
         let mut result = Ok(());
         if changed || effect.is_animated() || d.since_last_color() >= KEEPALIVE {
             effect.render(sh.t(), brightness(&cfg), &mut buf);
@@ -302,7 +306,7 @@ fn board_thread(sh: Arc<Shared>) {
             last_dram = Instant::now();
         }
         for (i, (d, id)) in dimms.iter().zip(&ids).enumerate() {
-            let effect = cfg.effect_for(id);
+            let effect = if cfg.lights_on { cfg.effect_for(id) } else { &Effect::Off };
             animated |= effect.is_animated();
             if !(changed || (effect.is_animated() && dram_due)) {
                 continue;
@@ -322,7 +326,7 @@ fn board_thread(sh: Arc<Shared>) {
             }
         }
         if let Some(m) = &msi {
-            let effect = cfg.effect_for("motherboard");
+            let effect = if cfg.lights_on { cfg.effect_for("motherboard") } else { &Effect::Off };
             animated |= effect.is_animated();
             let mut one = [Rgb::BLACK];
             effect.render(sh.t(), brightness(&cfg), &mut one);
@@ -379,7 +383,7 @@ fn peripherals_thread(sh: Arc<Shared>) {
         let mut animated = false;
         let mut failed = None;
         for (i, (id, d, last)) in devs.iter_mut().enumerate() {
-            let effect: &Effect = cfg.effect_for(id);
+            let effect: &Effect = if cfg.lights_on { cfg.effect_for(id) } else { &Effect::Off };
             animated |= effect.is_animated();
             if changed || effect.is_animated() || last.elapsed() >= KEEPALIVE {
                 buf.resize(d.leds, Rgb::BLACK);

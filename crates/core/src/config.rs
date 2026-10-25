@@ -68,6 +68,8 @@ pub fn interpolate(points: &[(f32, u8)], t: f32) -> u8 {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    /// Master switch: false renders every device black without touching the effects.
+    pub lights_on: bool,
     /// 0..=100
     pub brightness: u8,
     pub effect: Effect,
@@ -83,6 +85,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
+            lights_on: true,
             brightness: 100,
             effect: Effect::default(),
             per_device: BTreeMap::new(),
