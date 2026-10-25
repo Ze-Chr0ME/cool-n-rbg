@@ -531,9 +531,35 @@ fn arg_pos() -> Option<(f32, f32)> {
     Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
 }
 
+/// Bring an already open control panel to the front instead of opening a second one.
+fn focus_existing() -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, SetForegroundWindow, ShowWindow, SW_RESTORE};
+    let title: Vec<u16> = "Cool'n RGB\0".encode_utf16().collect();
+    let h = unsafe { FindWindowW(std::ptr::null(), title.as_ptr()) };
+    if h.is_null() {
+        return false;
+    }
+    unsafe {
+        ShowWindow(h, SW_RESTORE);
+        SetForegroundWindow(h);
+    }
+    true
+}
+
+/// A saved position from a monitor that is no longer connected would open the window off-screen.
+fn on_screen(p: (f32, f32)) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::*;
+    let m = |i| unsafe { GetSystemMetrics(i) } as f32;
+    let (x, y) = (m(SM_XVIRTUALSCREEN), m(SM_YVIRTUALSCREEN));
+    p.0 >= x - 50.0 && p.1 >= y - 10.0 && p.0 < x + m(SM_CXVIRTUALSCREEN) - 200.0 && p.1 < y + m(SM_CYVIRTUALSCREEN) - 100.0
+}
+
 fn main() -> eframe::Result {
+    if focus_existing() {
+        return Ok(());
+    }
     let saved = match call(&Request::GetConfig) {
-        Ok(Response::Config { config }) => config.gui_pos,
+        Ok(Response::Config { config }) => config.gui_pos.filter(|&p| on_screen(p)),
         _ => None,
     };
     let mut vp = egui::ViewportBuilder::default()

@@ -196,7 +196,7 @@ fn main() {
         let hwnd = CreateWindowExW(
             0,
             class.as_ptr(),
-            wide("Cool'n RGB").as_ptr(),
+            wide("Cool'n RGB service").as_ptr(),
             WS_OVERLAPPED,
             0,
             0,

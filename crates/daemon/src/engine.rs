@@ -242,8 +242,9 @@ fn board_thread(sh: Arc<Shared>) {
     let dimms: Vec<CorsairDram> =
         bus.as_ref().map(CorsairDram::detect).unwrap_or_default().into_iter().filter(|d| d.supports_direct()).collect();
     let ids: Vec<String> = dimms.iter().map(|d| format!("dram_{:02x}", d.addr)).collect();
-    for (d, id) in dimms.iter().zip(&ids) {
-        sh.set_device(info(id, "Corsair Vengeance RGB Pro", dram::LEDS, true, format!("SMBus {:#04x}", d.addr)));
+    for (n, (d, id)) in dimms.iter().zip(&ids).enumerate() {
+        let name = format!("Corsair Vengeance RGB Pro #{}", n + 1);
+        sh.set_device(info(id, &name, dram::LEDS, true, format!("SMBus {:#04x}", d.addr)));
     }
     let board = board_name();
     let msi = match MsiRgb::detect(&board) {
