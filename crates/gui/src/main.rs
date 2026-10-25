@@ -39,6 +39,7 @@ struct App {
     cfg: Option<Config>,
     dirty: bool,
     last_send: Instant,
+    last_edit: Instant,
     tab: Tab,
     /// None = edit the global effect, Some(id) = a device override.
     target: Option<String>,
@@ -69,14 +70,10 @@ fn worker(link: Arc<Mutex<Link>>, rx: Receiver<Msg>, ctx: egui::Context) {
         if let Some(c) = latest_cfg {
             let _ = call(&Request::SetConfig { config: c });
         }
-        let need_cfg = link.lock().unwrap().config.is_none();
-        let cfg = if need_cfg {
-            match call(&Request::GetConfig) {
-                Ok(Response::Config { config }) => Some(config),
-                _ => None,
-            }
-        } else {
-            None
+        // Always refresh: the tray menu can change the config while this window is open.
+        let cfg = match call(&Request::GetConfig) {
+            Ok(Response::Config { config }) => Some(config),
+            _ => None,
         };
         let st = call(&Request::Status);
         {
@@ -230,6 +227,7 @@ impl App {
             cfg: None,
             dirty: false,
             last_send: Instant::now(),
+            last_edit: Instant::now(),
             tab: match arg_value("--tab").as_deref() {
                 Some("fans") => Tab::Fans,
                 Some("devices") => Tab::Devices,
@@ -264,6 +262,10 @@ impl App {
             });
         });
         ui.separator();
+        if !cfg.lights_on {
+            ui.label(RichText::new("Lights are off. The preview shows what they will look like when switched on.").color(Color32::from_rgb(230, 170, 80)));
+            ui.add_space(4.0);
+        }
         let bright = cfg.brightness as f32 / 100.0;
         match self.target.clone() {
             None => {
@@ -401,7 +403,8 @@ impl eframe::App for App {
             let l = self.link.lock().unwrap();
             (l.status.clone(), l.error.clone(), l.config.clone())
         };
-        if self.cfg.is_none() {
+        // Take the daemon's copy unless the user is editing (pending send or edited in the last 2 s).
+        if self.cfg.is_none() || (!self.dirty && self.last_edit.elapsed() > Duration::from_secs(2) && remote_cfg.is_some()) {
             self.cfg = remote_cfg;
         }
         if status.is_none() {
@@ -505,6 +508,9 @@ impl eframe::App for App {
             }
         });
 
+        if self.dirty {
+            self.last_edit = Instant::now();
+        }
         // Send edits at most every 120 ms (slider drags fire every frame).
         if self.dirty && self.last_send.elapsed() >= Duration::from_millis(120) {
             if let Some(c) = &self.cfg {
