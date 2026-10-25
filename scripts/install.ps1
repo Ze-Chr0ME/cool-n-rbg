@@ -36,4 +36,4 @@ $s.WorkingDirectory = $dest
 $s.Save()
 
 Start-Process (Join-Path $dest 'coolrgbd.exe')
-Write-Host "Installed to $dest. Open 'Cool''n RGB' from the Start menu; enable 'Start with Windows' under Settings."
+Write-Host "Installed to $dest. Open Cool'n RGB from the Start menu; enable 'Start with Windows' under Settings."
