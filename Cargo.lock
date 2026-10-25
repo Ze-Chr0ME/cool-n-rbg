@@ -35,6 +35,12 @@ dependencies = [
 [[package]]
 name = "coolrgbd"
 version = "0.1.0"
+dependencies = [
+ "coolrgb-core",
+ "hidapi",
+ "serde_json",
+ "windows-sys 0.59.0",
+]
 
 [[package]]
 name = "find-msvc-tools"
