@@ -6,6 +6,9 @@ use crate::ipc::DeviceKind;
 use hidapi::{HidApi, HidDevice};
 
 /// (pid, name, led count, kind) of supported devices; LEDs are written as planar R.., G.., B...
+/// LED that shows the active DPI stage color on mice (OpenLinkHub: LED 0 = DPI, LED 1 = logo).
+pub const DPI_LED: usize = 0;
+
 pub const DEVICES: [(u16, &str, usize, DeviceKind); 1] = [(0x1b5e, "Corsair Harpoon RGB Wireless", 2, DeviceKind::Mouse)];
 
 pub struct CorsairV2 {
@@ -16,6 +19,8 @@ pub struct CorsairV2 {
     pub name: &'static str,
     pub kind: DeviceKind,
     pub leds: usize,
+    /// Color of the DPI indicator LED (`DPI_LED`), set from the active stage; `None` = the effect.
+    pub dpi_led: Option<Rgb>,
     /// Switch back to hardware lighting when dropped.
     pub restore_on_drop: bool,
 }
@@ -55,7 +60,7 @@ impl CorsairV2 {
     }
 
     fn init(dev: HidDevice, pid: u16, prefix: u8, name: &'static str, leds: usize, kind: DeviceKind) -> Result<CorsairV2, String> {
-        let mut d = CorsairV2 { dev, pid, prefix, light_ctrl: 0x22, name, kind, leds, restore_on_drop: true };
+        let mut d = CorsairV2 { dev, pid, prefix, light_ctrl: 0x22, name, kind, leds, dpi_led: None, restore_on_drop: true };
         d.drain();
         // Software render mode, then lighting control init (OpenRGB SW controller sequence).
         d.xfer(&[0x01, 0x03, 0x00, 0x02], true)?;
@@ -131,6 +136,7 @@ impl CorsairV2 {
         let mut s = MouseState { id: id.into(), ..Default::default() };
         let mut read = || -> Result<(), String> {
             s.dpi_stages = (0..DPI_STAGES as u8).map(|i| self.get(PROP_DPI_STAGE0 + i).map(|v| v as u16)).collect::<Result<_, _>>()?;
+            s.dpi_colors = (0..DPI_STAGES as u8).map(|i| self.get(PROP_DPI_COLOR0 + i).map(|v| Rgb(v as u8, (v >> 8) as u8, (v >> 16) as u8))).collect::<Result<_, _>>()?;
             s.stage = self.get(PROP_DPI_INDEX)? as u8;
             s.polling_hz = POLLING_HZ.get((self.get(PROP_POLLING)? as usize).wrapping_sub(1)).copied();
             s.angle_snapping = Some(self.get(PROP_ANGLE_SNAP)? != 0);
@@ -156,6 +162,14 @@ impl CorsairV2 {
                     }
                     if i == active {
                         self.set(PROP_DPI, d)?;
+                    }
+                }
+            }
+            MouseChange::DpiColors { colors } => {
+                for (i, c) in colors.iter().take(DPI_STAGES).enumerate() {
+                    let v = u32::from_le_bytes([c.0, c.1, c.2, 0]);
+                    if self.get(PROP_DPI_COLOR0 + i as u8)? != v {
+                        self.set(PROP_DPI_COLOR0 + i as u8, v)?;
                     }
                 }
             }
@@ -194,6 +208,7 @@ const PROP_BATTERY: u8 = 0x0f;
 const PROP_DPI_STAGE0: u8 = 0x18;
 const PROP_DPI_INDEX: u8 = 0x1e;
 const PROP_DPI: u8 = 0x20;
+const PROP_DPI_COLOR0: u8 = 0x2f;
 const PROP_SLEEP2: u8 = 0x37;
 
 impl Drop for CorsairV2 {

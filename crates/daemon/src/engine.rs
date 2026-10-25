@@ -6,7 +6,7 @@
 #![cfg_attr(not(all(feature = "corsair", feature = "evision", feature = "msi")), allow(dead_code, unused_imports, unused_mut, unused_variables, irrefutable_let_patterns))]
 use coolrgb_core::config::{Config, FanMode, MIN_FAN_PERCENT, MIN_GPU_FAN_PERCENT, MIN_PUMP_PERCENT};
 #[cfg(feature = "corsair")]
-use coolrgb_core::devices::corsair::{bragi::CorsairV2, commander_core::CommanderCore, dram::{self, CorsairDram}};
+use coolrgb_core::devices::corsair::{bragi::{CorsairV2, DPI_LED}, commander_core::CommanderCore, dram::{self, CorsairDram}};
 #[cfg(feature = "evision")]
 use coolrgb_core::devices::evision::v2::{self as evision_v2, EvisionV2};
 use coolrgb_core::devices::corsair::{MouseChange, MouseState};
@@ -615,6 +615,9 @@ impl Peripheral {
             Peripheral::Corsair(d) => {
                 buf.resize(d.leds, Rgb::BLACK);
                 effect.render(t, bright, buf);
+                if let Some(c) = d.dpi_led {
+                    buf[DPI_LED] = c.scale(bright);
+                }
                 d.set_colors(buf)
             }
             #[cfg(feature = "evision")]
@@ -671,6 +674,12 @@ fn set_keyboard_state(sh: &Shared, state: KeyboardState) {
     let mut st = sh.status.lock().unwrap();
     st.keyboards.retain(|k| k.id != state.id);
     st.keyboards.push(state);
+}
+
+/// Indicator color of the active DPI stage.
+#[cfg(feature = "corsair")]
+fn stage_color(state: &MouseState) -> Option<Rgb> {
+    state.dpi_colors.get(state.stage as usize).copied()
 }
 
 #[cfg(feature = "corsair")]
@@ -759,10 +768,12 @@ fn peripherals_thread(sh: Arc<Shared>) {
             for (i, r) in CorsairV2::open_all(&api).into_iter().enumerate() {
                 let id = format!("peripheral_{i}");
                 match r {
-                    Ok(d) => {
+                    Ok(mut d) => {
                         sh.set_device(info(&id, d.name, d.kind, d.leds, true, "USB"));
                         if d.kind == DeviceKind::Mouse {
-                            set_mouse_state(&sh, d.mouse_state(&id));
+                            let state = d.mouse_state(&id);
+                            d.dpi_led = stage_color(&state);
+                            set_mouse_state(&sh, state);
                             if let Some(ev) = d.open_events(&api) {
                                 listeners.push(listen_mouse(&sh, &id, ev));
                             }
@@ -820,6 +831,8 @@ fn peripherals_thread(sh: Arc<Shared>) {
             }
         }
         let mut failed = None;
+        // The DPI indicator changed color.
+        let mut mouse_redraw = false;
         #[cfg(feature = "corsair")]
         {
             let poll = Instant::now() >= next_mouse_poll;
@@ -849,6 +862,9 @@ fn peripherals_thread(sh: Arc<Shared>) {
                         continue;
                     }
                     state.error = error;
+                    let led = stage_color(&state);
+                    mouse_redraw |= m.dpi_led != led;
+                    m.dpi_led = led;
                     set_mouse_state(&sh, state);
                 }
             }
@@ -871,7 +887,7 @@ fn peripherals_thread(sh: Arc<Shared>) {
             if effect.is_animated() {
                 wait = FRAME;
             }
-            let result = if changed || effect.is_animated() || d.leaving_onboard() {
+            let result = if changed || mouse_redraw || effect.is_animated() || d.leaving_onboard() {
                 Some(d.render(effect, sh.t(), brightness(&cfg), &mut buf))
             } else if last.elapsed() >= d.keepalive() {
                 Some(d.refresh(effect, sh.t(), brightness(&cfg), &mut buf))

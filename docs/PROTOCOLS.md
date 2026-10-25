@@ -69,7 +69,7 @@ unless marked as a guess.
 | `1e` | 1 | active hardware DPI stage; writable in software mode |
 | `1f` | 1 | unknown, DPI-related (enabled stages?) |
 | `20` | 1000 | current DPI, X and Y: 200..10000 in steps of 200, anything else answers status 01 |
-| `2f..33` | blue, white, green, purple, orange | DPI stage 0..4 indicator colors, RGB (guess) |
+| `2f..33` | blue, white, green, purple, orange | DPI stage 0..4 indicator colors, value bytes R, G, B. In software mode the host draws the DPI LED (LED 0; LED 1 = logo) itself |
 | `b0` | 0 | button response optimization 0/1 |
 
 Not on this mouse (GET fails): `21`/`22` (separate DPI X/Y on other Bragi mice), `1d`.

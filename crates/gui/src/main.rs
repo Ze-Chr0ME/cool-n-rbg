@@ -56,8 +56,8 @@ struct App {
     kb_edit: Option<(String, OnboardLighting)>,
     kb_dirty: bool,
     kb_last_edit: Instant,
-    /// Mouse DPI stages being edited (device id, values), sent like `kb_edit`.
-    mouse_edit: Option<(String, Vec<u16>)>,
+    /// Mouse DPI stages being edited (device id, DPI values, colors), sent like `kb_edit`.
+    mouse_edit: Option<(String, Vec<u16>, Vec<Rgb>)>,
     mouse_dirty: bool,
     mouse_last_edit: Instant,
 }
@@ -640,11 +640,11 @@ impl App {
         ui.add_space(8.0);
         let send = |tx: &Sender<Msg>, change| drop(tx.send(Msg::Mouse { id: m.id.clone(), change }));
         // Edits stay local until the user pauses, so dragging a slider doesn't rewrite the mouse's memory each frame.
-        let mut dpi = match &self.mouse_edit {
-            Some((id, d)) if *id == m.id => d.clone(),
-            _ => m.dpi_stages.clone(),
+        let (mut dpi, mut colors) = match &self.mouse_edit {
+            Some((id, d, c)) if *id == m.id => (d.clone(), c.clone()),
+            _ => (m.dpi_stages.clone(), m.dpi_colors.clone()),
         };
-        let before = dpi.clone();
+        let before = (dpi.clone(), colors.clone());
         ui.label(RichText::new("DPI stages").strong());
         egui::Grid::new(("mouse-dpi", &m.id)).spacing([14.0, 6.0]).show(ui, |ui| {
             for (i, d) in dpi.iter_mut().enumerate() {
@@ -653,19 +653,29 @@ impl App {
                     send(&self.tx, MouseChange::Stage { stage: i as u8 });
                 }
                 ui.add(egui::Slider::new(d, DPI_MIN..=DPI_MAX).step_by(DPI_STEP as f64).suffix(" DPI"));
+                if let Some(c) = colors.get_mut(i) {
+                    let mut v = [c.0, c.1, c.2];
+                    if ui.color_edit_button_srgb(&mut v).on_hover_text("DPI light color for this stage").changed() {
+                        *c = Rgb(v[0], v[1], v[2]);
+                    }
+                }
                 ui.end_row();
             }
         });
-        if dpi != before {
-            self.mouse_edit = Some((m.id.clone(), dpi.clone()));
+        if (&dpi, &colors) != (&before.0, &before.1) {
+            self.mouse_edit = Some((m.id.clone(), dpi, colors));
             self.mouse_last_edit = Instant::now();
             self.mouse_dirty = true;
         }
-        let pending = self.mouse_dirty || matches!(&self.mouse_edit, Some((id, d)) if *id == m.id && *d != m.dpi_stages);
+        let pending = self.mouse_dirty
+            || matches!(&self.mouse_edit, Some((id, d, c)) if *id == m.id && (*d != m.dpi_stages || *c != m.dpi_colors));
         if pending {
             ui.label(RichText::new("Saving to the mouse…").weak());
         }
-        ui.label(RichText::new("The DPI button steps through the stages. They are saved on the mouse, so they also work when Cool'n RGB isn't running.").weak());
+        ui.label(
+            RichText::new("The DPI button steps through the stages; the DPI light shows the stage's color. They are saved on the mouse, so they also work when Cool'n RGB isn't running.")
+                .weak(),
+        );
         ui.add_space(8.0);
         egui::Grid::new(("mouse-settings", &m.id)).spacing([14.0, 8.0]).show(ui, |ui| {
             ui.label("USB polling rate");
@@ -700,19 +710,25 @@ impl App {
         ui.label(RichText::new("Sleep applies when the mouse runs on battery.").weak());
     }
 
-    /// Send a paused DPI edit; drop the local copy once the mouse reports it back.
+    /// Send a paused DPI stage edit; drop the local copy once the mouse reports it back.
     fn flush_mouse_edit(&mut self, ctx: &egui::Context, st: Option<&Status>) {
-        let Some((id, dpi)) = self.mouse_edit.clone() else { return };
+        let Some((id, dpi, colors)) = self.mouse_edit.clone() else { return };
+        let stored = st.and_then(|s| s.mice.iter().find(|m| m.id == id));
         if self.mouse_dirty {
             if self.mouse_last_edit.elapsed() >= Duration::from_millis(500) {
-                let _ = self.tx.send(Msg::Mouse { id, change: MouseChange::DpiStages { dpi } });
+                if stored.is_none_or(|m| m.dpi_stages != dpi) {
+                    let _ = self.tx.send(Msg::Mouse { id: id.clone(), change: MouseChange::DpiStages { dpi } });
+                }
+                if stored.is_none_or(|m| m.dpi_colors != colors) {
+                    let _ = self.tx.send(Msg::Mouse { id, change: MouseChange::DpiColors { colors } });
+                }
                 self.mouse_dirty = false;
             } else {
                 ctx.request_repaint_after(Duration::from_millis(100));
             }
         } else {
-            let stored = st.and_then(|s| s.mice.iter().find(|m| m.id == id)).map(|m| &m.dpi_stages);
-            if stored == Some(&dpi) || self.mouse_last_edit.elapsed() >= Duration::from_secs(5) {
+            let done = stored.is_some_and(|m| m.dpi_stages == dpi && m.dpi_colors == colors);
+            if done || self.mouse_last_edit.elapsed() >= Duration::from_secs(5) {
                 self.mouse_edit = None;
             }
         }

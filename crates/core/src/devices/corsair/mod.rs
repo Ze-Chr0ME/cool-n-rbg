@@ -2,6 +2,7 @@
 //!
 //! The mouse settings below are what the daemon and the control panel exchange over IPC. They are
 //! plain data and always compiled, so the GUI builds without the USB drivers behind the `corsair` feature.
+use crate::effects::Rgb;
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "corsair")]
@@ -32,6 +33,8 @@ pub fn valid_dpi(dpi: u16) -> u16 {
 pub enum MouseChange {
     /// DPI of every stage, `DPI_STAGES` values.
     DpiStages { dpi: Vec<u16> },
+    /// Indicator color of every stage, `DPI_STAGES` values.
+    DpiColors { colors: Vec<Rgb> },
     /// Make a stage active, 0-based.
     Stage { stage: u8 },
     /// Next stage, wrapping around (the DPI button).
@@ -47,6 +50,8 @@ pub enum MouseChange {
 pub struct MouseState {
     pub id: String,
     pub dpi_stages: Vec<u16>,
+    /// Indicator color of each stage, shown on the DPI LED.
+    pub dpi_colors: Vec<Rgb>,
     /// Active stage, 0-based.
     pub stage: u8,
     pub polling_hz: Option<u16>,
