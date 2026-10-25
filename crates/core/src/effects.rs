@@ -75,3 +75,25 @@ impl Effect {
         }
     }
 }
+
+/// RGBA pixels of the app icon (rainbow ring), `n` x `n`, edges anti-aliased.
+pub fn icon_rgba(n: u32) -> Vec<u8> {
+    let c = (n as f32 - 1.0) / 2.0;
+    let (ro, ri) = (n as f32 * 0.485, n as f32 * 0.26);
+    let mut out = Vec::with_capacity((n * n * 4) as usize);
+    for y in 0..n {
+        for x in 0..n {
+            let mut cover = 0.0;
+            for s in 0..16 {
+                let dx = x as f32 + ((s % 4) as f32 + 0.5) / 4.0 - 0.5 - c;
+                let dy = y as f32 + ((s / 4) as f32 + 0.5) / 4.0 - 0.5 - c;
+                if (ri..=ro).contains(&(dx * dx + dy * dy).sqrt()) {
+                    cover += 1.0 / 16.0;
+                }
+            }
+            let col = Rgb::from_hue((y as f32 - c).atan2(x as f32 - c) / std::f32::consts::TAU);
+            out.extend_from_slice(&[col.0, col.1, col.2, (cover * 255.0) as u8]);
+        }
+    }
+    out
+}

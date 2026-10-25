@@ -15,6 +15,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 const FRAME: Duration = Duration::from_millis(50);
+/// SMBus transfers busy-wait in the kernel, so DIMMs animate slower than USB devices.
+const DRAM_FRAME: Duration = Duration::from_millis(100);
 const IDLE: Duration = Duration::from_millis(250);
 const KEEPALIVE: Duration = Duration::from_secs(4);
 const LIQUID_CRITICAL: f32 = 50.0;
@@ -27,8 +29,6 @@ pub struct Shared {
     pub stop: AtomicBool,
     pub rescan_gen: AtomicU64,
     pub start: Instant,
-    /// Milliseconds since `start` of the last GUI status request.
-    pub gui_seen_ms: AtomicU64,
     /// Set by a handover quit: leave devices in software mode for the next daemon.
     pub handover: AtomicBool,
 }
@@ -42,22 +42,12 @@ impl Shared {
             stop: AtomicBool::new(false),
             rescan_gen: AtomicU64::new(0),
             start: Instant::now(),
-            gui_seen_ms: AtomicU64::new(0),
             handover: AtomicBool::new(false),
         })
     }
 
     fn t(&self) -> f32 {
         self.start.elapsed().as_secs_f32()
-    }
-
-    pub fn mark_gui_seen(&self) {
-        self.gui_seen_ms.store(self.start.elapsed().as_millis() as u64 + 1, Ordering::Relaxed);
-    }
-
-    fn gui_active(&self) -> bool {
-        let seen = self.gui_seen_ms.load(Ordering::Relaxed);
-        seen != 0 && (self.start.elapsed().as_millis() as u64).saturating_sub(seen) < 15_000
     }
 
     fn stopped(&self) -> bool {
@@ -273,12 +263,15 @@ fn board_thread(sh: Arc<Shared>) {
     let mut px = vec![Rgb::BLACK; dram::LEDS];
     let mut last_msi = None;
     let mut errors = vec![0u32; dimms.len()];
+    let mut last_px: Vec<Option<Vec<Rgb>>> = vec![None; dimms.len()];
+    let mut last_dram = Instant::now() - Duration::from_secs(1);
     while !sh.stopped() {
         let frame_start = Instant::now();
         if last_sensors.elapsed() >= Duration::from_secs(1) {
             last_sensors = Instant::now();
             let c = cpu.as_ref().and_then(CpuTemp::read);
-            let want_gpu = sh.gui_active() || uses_gpu(&cfg.pump) || uses_gpu(&cfg.fans);
+            // NVML maps ~15 MB that never fully goes away, so only load it when a fan curve needs it.
+            let want_gpu = uses_gpu(&cfg.pump) || uses_gpu(&cfg.fans);
             if want_gpu && gpu.is_none() && gpu_failed_at.is_none_or(|t| t.elapsed() > Duration::from_secs(60)) {
                 match GpuTemp::open() {
                     Ok(g) => gpu = Some(g),
@@ -303,12 +296,23 @@ fn board_thread(sh: Arc<Shared>) {
             None => false,
         };
         let mut animated = false;
+        let dram_due = changed || last_dram.elapsed() >= DRAM_FRAME;
+        if dram_due {
+            last_dram = Instant::now();
+        }
         for (i, (d, id)) in dimms.iter().zip(&ids).enumerate() {
             let effect = cfg.effect_for(id);
             animated |= effect.is_animated();
-            if changed || effect.is_animated() {
-                effect.render(sh.t(), brightness(&cfg), &mut px);
-                if let Err(e) = d.set_colors(&px) {
+            if !(changed || (effect.is_animated() && dram_due)) {
+                continue;
+            }
+            effect.render(sh.t(), brightness(&cfg), &mut px);
+            if !changed && last_px[i].as_deref() == Some(&px[..]) {
+                continue;
+            }
+            match d.set_colors(&px) {
+                Ok(()) => last_px[i] = Some(px.clone()),
+                Err(e) => {
                     errors[i] += 1;
                     if errors[i] == 10 {
                         log(&e);

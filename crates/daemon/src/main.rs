@@ -9,7 +9,6 @@ use coolrgb_core::config::Config;
 use coolrgb_core::ipc::Request;
 use std::sync::atomic::{AtomicIsize, Ordering};
 use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, WPARAM};
-use windows_sys::Win32::Graphics::Gdi::{CreateBitmap, DeleteObject};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX};
 use windows_sys::Win32::System::Threading::{CreateMutexW, GetCurrentProcess};
@@ -41,30 +40,11 @@ pub fn working_set_kb() -> u64 {
     c.PrivateUsage as u64 / 1024
 }
 
-/// 32x32 rainbow ring icon generated at runtime (no resource compiler needed).
-fn make_icon() -> HICON {
-    const N: i32 = 32;
-    let mut bgra = vec![0u8; (N * N * 4) as usize];
-    for y in 0..N {
-        for x in 0..N {
-            let (dx, dy) = (x as f32 - 15.5, y as f32 - 15.5);
-            let r = (dx * dx + dy * dy).sqrt();
-            if (8.0..15.5).contains(&r) {
-                let c = coolrgb_core::effects::Rgb::from_hue(dy.atan2(dx) / std::f32::consts::TAU);
-                let i = ((y * N + x) * 4) as usize;
-                bgra[i..i + 4].copy_from_slice(&[c.2, c.1, c.0, 255]);
-            }
-        }
-    }
-    let mask = vec![0u8; (N * N / 8) as usize];
+/// Small icon from the exe's embedded resource (id 1, see app.rc).
+fn tray_icon() -> HICON {
     unsafe {
-        let color = CreateBitmap(N, N, 1, 32, bgra.as_ptr().cast());
-        let mask = CreateBitmap(N, N, 1, 1, mask.as_ptr().cast());
-        let ii = ICONINFO { fIcon: 1, xHotspot: 0, yHotspot: 0, hbmMask: mask, hbmColor: color };
-        let icon = CreateIconIndirect(&ii);
-        DeleteObject(color);
-        DeleteObject(mask);
-        icon
+        let size = GetSystemMetrics(SM_CXSMICON);
+        LoadImageW(GetModuleHandleW(std::ptr::null()), 1 as _, IMAGE_ICON, size, size, 0) as HICON
     }
 }
 
@@ -80,7 +60,7 @@ fn add_tray(hwnd: HWND) {
     let mut nid = tray_data(hwnd);
     nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     nid.uCallbackMessage = WM_TRAY;
-    nid.hIcon = make_icon();
+    nid.hIcon = tray_icon();
     let tip = wide("Cool'n RGB");
     nid.szTip[..tip.len()].copy_from_slice(&tip);
     unsafe { Shell_NotifyIconW(NIM_ADD, &nid) };

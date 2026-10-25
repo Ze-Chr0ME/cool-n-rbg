@@ -47,6 +47,8 @@ struct App {
 
 /// Background I/O so the UI never blocks on the pipe.
 fn worker(link: Arc<Mutex<Link>>, rx: Receiver<Msg>, ctx: egui::Context) {
+    // The daemon skips NVML unless a fan curve needs it; read the GPU here for display.
+    let gpu = coolrgb_core::sensors::GpuTemp::open().ok();
     loop {
         let mut msgs = Vec::new();
         match rx.recv_timeout(Duration::from_millis(1000)) {
@@ -80,7 +82,10 @@ fn worker(link: Arc<Mutex<Link>>, rx: Receiver<Msg>, ctx: egui::Context) {
         {
             let mut l = link.lock().unwrap();
             match st {
-                Ok(Response::Status { status }) => {
+                Ok(Response::Status { mut status }) => {
+                    if status.gpu.is_none() {
+                        status.gpu = gpu.as_ref().and_then(|g| g.read());
+                    }
                     l.status = Some(status);
                     l.error = None;
                 }
@@ -534,7 +539,8 @@ fn main() -> eframe::Result {
     let mut vp = egui::ViewportBuilder::default()
         .with_title("Cool'n RGB")
         .with_inner_size([820.0, 600.0])
-        .with_min_inner_size([640.0, 460.0]);
+        .with_min_inner_size([640.0, 460.0])
+        .with_icon(egui::IconData { rgba: coolrgb_core::effects::icon_rgba(64), width: 64, height: 64 });
     if let Some(p) = arg_pos().or(saved) {
         vp = vp.with_position(p);
     }

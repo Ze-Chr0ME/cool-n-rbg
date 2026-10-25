@@ -93,7 +93,6 @@ fn handle(sh: &Shared, file: &std::fs::File, on_request: &impl Fn(&Request)) {
 fn respond(sh: &Shared, req: &Request) -> Response {
     match req {
         Request::Status => {
-            sh.mark_gui_seen();
             let mut status = sh.status.lock().unwrap().clone();
             status.working_set_kb = crate::working_set_kb();
             Response::Status { status }
