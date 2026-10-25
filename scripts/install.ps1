@@ -27,7 +27,16 @@ function Stop-Service-Handover {
 
 Stop-Service-Handover
 New-Item -ItemType Directory -Force $dest | Out-Null
-Copy-Item (Join-Path $src 'coolrgbd.exe'), (Join-Path $src 'coolrgb.exe') $dest -Force
+Get-ChildItem $dest -Filter '*.old.exe' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+foreach ($exe in 'coolrgbd.exe', 'coolrgb.exe') {
+    $target = Join-Path $dest $exe
+    # A file that is still locked (window closing, antivirus scan) can be renamed but not overwritten.
+    try { Copy-Item (Join-Path $src $exe) $target -Force }
+    catch {
+        Rename-Item $target ([IO.Path]::ChangeExtension($exe, '.old.exe')) -Force
+        Copy-Item (Join-Path $src $exe) $target -Force
+    }
+}
 
 $lnk = Join-Path ([Environment]::GetFolderPath('CommonPrograms')) "Cool'n RGB.lnk"
 $sh = New-Object -ComObject WScript.Shell

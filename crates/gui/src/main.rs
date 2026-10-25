@@ -389,7 +389,7 @@ fn fan_mode_ui(ui: &mut egui::Ui, id: &str, mode: &mut FanMode, floor: u8, temps
                 TempSource::Max => None,
             };
             let range = if *source == TempSource::Liquid { (20.0, 60.0) } else { (20.0, 100.0) };
-            changed |= fan_curve::editor(ui, id, points, floor, range, current);
+            changed |= fan_curve::editor(ui, id, points, floor, id == "gpu", range, current);
         }
     }
     changed
@@ -414,7 +414,7 @@ fn gpu_fans_ui(ui: &mut egui::Ui, gpu: &mut Option<FanMode>, temps: (Option<f32>
         Some(mode) => {
             ui.label(
                 RichText::new(format!(
-                    "Fans never stop in custom mode (card minimum {MIN_GPU_FAN_PERCENT}%). Full speed at 85 °C or if the sensor fails."
+                    "Drag a point to the bottom (0 %) to let the fans stop there; anything else is at least                      {MIN_GPU_FAN_PERCENT}% (card minimum). Full speed at 85 °C or if the sensor fails."
                 ))
                 .weak(),
             );

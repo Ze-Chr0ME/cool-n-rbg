@@ -129,7 +129,7 @@ pub fn config_path() -> PathBuf {
 pub fn default_gpu_curve() -> FanMode {
     FanMode::Curve {
         source: TempSource::Gpu,
-        points: vec![(50.0, 30), (60.0, 40), (70.0, 60), (78.0, 80), (84.0, 100)],
+        points: vec![(49.0, 0), (50.0, 30), (60.0, 40), (70.0, 60), (78.0, 80), (84.0, 100)],
     }
 }
 

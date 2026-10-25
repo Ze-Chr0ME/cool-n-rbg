@@ -4,8 +4,17 @@ use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, StrokeKind};
 const SIZE: egui::Vec2 = egui::vec2(460.0, 210.0);
 const PAD: f32 = 34.0;
 
-/// Returns true when a point moved. `range` is the temperature axis in °C.
-pub fn editor(ui: &mut egui::Ui, id: &str, points: &mut [(f32, u8)], floor: u8, range: (f32, f32), current: Option<f32>) -> bool {
+/// Returns true when a point moved. `range` is the temperature axis in °C. With `allow_zero`, dragging
+/// a point well below the floor snaps it to 0 % (fans stopped).
+pub fn editor(
+    ui: &mut egui::Ui,
+    id: &str,
+    points: &mut [(f32, u8)],
+    floor: u8,
+    allow_zero: bool,
+    range: (f32, f32),
+    current: Option<f32>,
+) -> bool {
     let (outer, resp) = ui.allocate_exact_size(SIZE, Sense::click_and_drag());
     let plot = Rect::from_min_max(outer.min + egui::vec2(PAD, 6.0), outer.max - egui::vec2(8.0, 22.0));
     let (t0, t1) = range;
@@ -65,7 +74,8 @@ pub fn editor(ui: &mut egui::Ui, id: &str, points: &mut [(f32, u8)], floor: u8, 
         // Keep points ordered: a point can't pass its neighbours.
         let lo = if i > 0 { points[i - 1].0 + 1.0 } else { t0 };
         let hi = if i + 1 < points.len() { points[i + 1].0 - 1.0 } else { t1 };
-        points[i] = (t.clamp(lo, hi.max(lo)).round(), (d.round() as u8).max(floor));
+        let duty = if allow_zero && d < floor as f32 / 2.0 { 0 } else { (d.round() as u8).max(floor) };
+        points[i] = (t.clamp(lo, hi.max(lo)).round(), duty);
         changed = true;
     }
     if resp.drag_stopped() {
@@ -83,7 +93,8 @@ pub fn editor(ui: &mut egui::Ui, id: &str, points: &mut [(f32, u8)], floor: u8, 
         let hot = dragging == Some(i) || hover.is_some_and(|h| h.distance(c) < 18.0);
         painter.circle_filled(c, if hot { 7.0 } else { 5.0 }, if hot { Color32::WHITE } else { accent });
         if hot {
-            painter.text(c + egui::vec2(8.0, -8.0), egui::Align2::LEFT_BOTTOM, format!("{t:.0}° → {d}%"), font.clone(), Color32::WHITE);
+            let label = if d == 0 { format!("{t:.0}° → stopped") } else { format!("{t:.0}° → {d}%") };
+            painter.text(c + egui::vec2(8.0, -8.0), egui::Align2::LEFT_BOTTOM, label, font.clone(), Color32::WHITE);
         }
     }
     painter.rect_stroke(plot, 4.0, Stroke::new(1.0, weak.gamma_multiply(0.6)), StrokeKind::Inside);

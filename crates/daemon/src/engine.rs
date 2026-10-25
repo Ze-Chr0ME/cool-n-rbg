@@ -347,37 +347,52 @@ pub fn restore_gpu_fans() {
     }
 }
 
+/// How long a GPU curve must ask for 0 % before the fans are handed to the card's fan-stop.
+const GPU_STOP_DELAY: Duration = Duration::from_secs(20);
+
 struct GpuFans {
     nv: Option<NvGpu>,
     duty: Option<u8>,
     manual: bool,
     last_write: Instant,
+    /// Since when the curve has been asking for 0 %.
+    zero_since: Option<Instant>,
 }
 
 impl GpuFans {
     fn new() -> GpuFans {
         restore_gpu_fans();
         let nv = NvGpu::open().map_err(|e| log(&format!("nvapi: {e}"))).ok();
-        GpuFans { nv, duty: None, manual: false, last_write: Instant::now() }
+        GpuFans { nv, duty: None, manual: false, last_write: Instant::now(), zero_since: None }
     }
 
     fn update(&mut self, sh: &Shared, cfg: &Config, liquid: Option<f32>, cpu: Option<f32>) {
-        let Some(nv) = &self.nv else { return };
+        let Some(nv) = self.nv.take() else { return };
+        self.update_with(&nv, sh, cfg, liquid, cpu);
+        self.nv = Some(nv);
+    }
+
+    fn update_with(&mut self, nv: &NvGpu, sh: &Shared, cfg: &Config, liquid: Option<f32>, cpu: Option<f32>) {
         let temp = nv.temperature();
+        // A curve point at 0 % means "let the card stop its fans": NVIDIA's manual mode can't go
+        // below 30 %, but the card's own automatic mode has zero-RPM.
+        let raw = match &cfg.gpu_fans {
+            None => None,
+            Some(_) if temp.is_some_and(|t| t >= GPU_CRITICAL) => Some(100),
+            Some(mode) => Some(mode.duty(liquid, cpu, temp).unwrap_or(100)),
+        };
+        if raw == Some(0) {
+            self.zero_since.get_or_insert_with(Instant::now);
+        } else {
+            self.zero_since = None;
+        }
+        let stop = self.zero_since.is_some_and(|t| t.elapsed() >= GPU_STOP_DELAY) || (raw == Some(0) && !self.manual);
         match &cfg.gpu_fans {
-            None => {
-                if self.manual && nv.set_all(None).is_ok() {
-                    self.manual = false;
-                    self.duty = None;
-                    let _ = std::fs::remove_file(gpu_marker());
-                }
-            }
-            Some(mode) => {
-                let target = if temp.is_some_and(|t| t >= GPU_CRITICAL) {
-                    100
-                } else {
-                    target_duty(mode, liquid, cpu, temp, MIN_GPU_FAN_PERCENT)
-                };
+            None => self.to_auto(nv),
+            Some(_) if stop => self.to_auto(nv),
+            Some(_) => {
+                // While waiting out GPU_STOP_DELAY keep the fans at the lowest manual speed.
+                let target = raw.unwrap_or(100).clamp(MIN_GPU_FAN_PERCENT, 100);
                 let d = self.duty.map_or(target, |cur| smooth(cur, target));
                 if !self.manual || Some(d) != self.duty || self.last_write.elapsed() >= Duration::from_secs(10) {
                     if !self.manual {
@@ -401,6 +416,14 @@ impl GpuFans {
         st.gpu_fan_rpm = coolers.iter().map(|c| c.rpm).collect();
         st.gpu_fan_percent = coolers.iter().map(|c| c.percent).collect();
         st.gpu_fan_manual = coolers.iter().any(|c| c.manual);
+    }
+
+    fn to_auto(&mut self, nv: &NvGpu) {
+        if self.manual && nv.set_all(None).is_ok() {
+            self.manual = false;
+            self.duty = None;
+            let _ = std::fs::remove_file(gpu_marker());
+        }
     }
 
     fn release(&mut self) {
