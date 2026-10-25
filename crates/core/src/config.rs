@@ -6,6 +6,8 @@ use std::path::PathBuf;
 /// Hard floors agreed for this build. The daemon never sends a lower duty.
 pub const MIN_FAN_PERCENT: u8 = 40;
 pub const MIN_PUMP_PERCENT: u8 = 70;
+/// Lowest duty NVIDIA allows on this card's fans.
+pub const MIN_GPU_FAN_PERCENT: u8 = 30;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -77,6 +79,8 @@ pub struct Config {
     pub per_device: BTreeMap<String, Effect>,
     pub pump: FanMode,
     pub fans: FanMode,
+    /// `None` = the graphics card's own automatic curve (including zero-RPM).
+    pub gpu_fans: Option<FanMode>,
     pub autostart: bool,
     /// Last GUI window position (screen coordinates).
     pub gui_pos: Option<(f32, f32)>,
@@ -97,27 +101,51 @@ impl Default for Config {
                 source: TempSource::Liquid,
                 points: vec![(28.0, 40), (32.0, 50), (36.0, 70), (40.0, 90), (43.0, 100)],
             },
+            gpu_fans: None,
             autostart: false,
             gui_pos: None,
         }
     }
 }
 
+/// Machine-wide `%ProgramData%\CoolRGB`. Per-user `%APPDATA%` is unreliable here: a service launched
+/// from an MSIX-packaged app (e.g. a terminal inside one) gets a redirected private AppData, so it and
+/// the logon task would each read a different config.
 pub fn config_dir() -> PathBuf {
-    let base = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
-    base.join("coolrgb")
+    let base = std::env::var_os("ProgramData").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
+    base.join("CoolRGB")
+}
+
+/// Where versions before 0.1.1 kept the config.
+fn legacy_config_path() -> Option<PathBuf> {
+    std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join("coolrgb").join("config.json"))
 }
 
 pub fn config_path() -> PathBuf {
     config_dir().join("config.json")
 }
 
+/// Starting point offered when GPU fans are switched to a curve.
+pub fn default_gpu_curve() -> FanMode {
+    FanMode::Curve {
+        source: TempSource::Gpu,
+        points: vec![(50.0, 30), (60.0, 40), (70.0, 60), (78.0, 80), (84.0, 100)],
+    }
+}
+
 impl Config {
     pub fn load() -> Config {
-        std::fs::read(config_path())
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default()
+        let parse = |p: PathBuf| std::fs::read(p).ok().and_then(|b| serde_json::from_slice::<Config>(&b).ok());
+        if let Some(c) = parse(config_path()) {
+            return c;
+        }
+        match legacy_config_path().and_then(parse) {
+            Some(c) => {
+                let _ = c.save();
+                c
+            }
+            None => Config::default(),
+        }
     }
 
     pub fn save(&self) -> std::io::Result<()> {

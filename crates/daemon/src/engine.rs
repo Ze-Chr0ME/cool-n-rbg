@@ -1,6 +1,6 @@
 //! Device worker threads. Each thread owns its devices, renders effects from the shared clock and
 //! re-opens devices after errors (USB replug, resume from sleep).
-use coolrgb_core::config::{Config, FanMode, TempSource, MIN_FAN_PERCENT, MIN_PUMP_PERCENT};
+use coolrgb_core::config::{Config, FanMode, MIN_FAN_PERCENT, MIN_GPU_FAN_PERCENT, MIN_PUMP_PERCENT};
 use coolrgb_core::devices::commander_core::CommanderCore;
 use coolrgb_core::devices::corsair_v2::CorsairV2;
 use coolrgb_core::devices::dram::{self, CorsairDram};
@@ -8,7 +8,8 @@ use coolrgb_core::devices::msi_rgb::MsiRgb;
 use coolrgb_core::devices::smbus::Smbus;
 use coolrgb_core::effects::{Effect, Rgb};
 use coolrgb_core::ipc::{DeviceInfo, Status};
-use coolrgb_core::sensors::{board_name, CpuTemp, GpuTemp};
+use coolrgb_core::nvapi::NvGpu;
+use coolrgb_core::sensors::{board_name, CpuTemp};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -21,6 +22,7 @@ const IDLE: Duration = Duration::from_millis(250);
 const KEEPALIVE: Duration = Duration::from_secs(4);
 const LIQUID_CRITICAL: f32 = 50.0;
 const CPU_CRITICAL: f32 = 95.0;
+const GPU_CRITICAL: f32 = 85.0;
 
 pub struct Shared {
     pub config: Mutex<Config>,
@@ -106,10 +108,6 @@ fn target_duty(mode: &FanMode, liquid: Option<f32>, cpu: Option<f32>, gpu: Optio
         return 100;
     }
     mode.duty(liquid, cpu, gpu).unwrap_or(100).clamp(floor, 100)
-}
-
-fn uses_gpu(mode: &FanMode) -> bool {
-    matches!(mode, FanMode::Curve { source: TempSource::Gpu | TempSource::Max, .. })
 }
 
 /// Ramp up immediately, ramp down by at most 3 % per second.
@@ -240,8 +238,7 @@ fn commander_thread(sh: Arc<Shared>) {
 
 fn board_thread(sh: Arc<Shared>) {
     let cpu = CpuTemp::open().map_err(|e| log(&format!("cpu temperature: {e}"))).ok();
-    let mut gpu: Option<GpuTemp> = None;
-    let mut gpu_failed_at: Option<Instant> = None;
+    let mut gpu = GpuFans::new();
     let bus = Smbus::open().map(Arc::new).map_err(|e| log(&format!("smbus: {e}"))).ok();
     let dimms: Vec<CorsairDram> =
         bus.as_ref().map(CorsairDram::detect).unwrap_or_default().into_iter().filter(|d| d.supports_direct()).collect();
@@ -275,23 +272,12 @@ fn board_thread(sh: Arc<Shared>) {
         if last_sensors.elapsed() >= Duration::from_secs(1) {
             last_sensors = Instant::now();
             let c = cpu.as_ref().and_then(CpuTemp::read);
-            // NVML maps ~15 MB that never fully goes away, so only load it when a fan curve needs it.
-            let want_gpu = uses_gpu(&cfg.pump) || uses_gpu(&cfg.fans);
-            if want_gpu && gpu.is_none() && gpu_failed_at.is_none_or(|t| t.elapsed() > Duration::from_secs(60)) {
-                match GpuTemp::open() {
-                    Ok(g) => gpu = Some(g),
-                    Err(e) => {
-                        log(&format!("gpu temperature: {e}"));
-                        gpu_failed_at = Some(Instant::now());
-                    }
-                }
-            } else if !want_gpu {
-                gpu = None;
-            }
-            let g = gpu.as_ref().and_then(GpuTemp::read);
-            let mut st = sh.status.lock().unwrap();
-            st.cpu = c;
-            st.gpu = g;
+            let liquid = {
+                let mut st = sh.status.lock().unwrap();
+                st.cpu = c;
+                st.liquid
+            };
+            gpu.update(&sh, &cfg, liquid, c);
         }
         let changed = match sh.config_if_changed(&mut gen) {
             Some(c) => {
@@ -340,6 +326,91 @@ fn board_thread(sh: Arc<Shared>) {
         }
         let wait = if animated { FRAME } else { IDLE };
         sh.nap(wait.saturating_sub(frame_start.elapsed()));
+    }
+    gpu.release();
+}
+
+/// Marker meaning "we left the GPU fans in manual mode"; lets a restart after a crash hand them back
+/// to the card without overriding other tools (e.g. MSI Afterburner) when we never touched them.
+fn gpu_marker() -> std::path::PathBuf {
+    coolrgb_core::config::config_dir().join("gpu-fans-manual")
+}
+
+/// Hand GPU fans back to the card's automatic curve. Also called from the panic hook.
+pub fn restore_gpu_fans() {
+    if gpu_marker().exists() {
+        if let Ok(g) = NvGpu::open() {
+            if g.set_all(None).is_ok() {
+                let _ = std::fs::remove_file(gpu_marker());
+            }
+        }
+    }
+}
+
+struct GpuFans {
+    nv: Option<NvGpu>,
+    duty: Option<u8>,
+    manual: bool,
+    last_write: Instant,
+}
+
+impl GpuFans {
+    fn new() -> GpuFans {
+        restore_gpu_fans();
+        let nv = NvGpu::open().map_err(|e| log(&format!("nvapi: {e}"))).ok();
+        GpuFans { nv, duty: None, manual: false, last_write: Instant::now() }
+    }
+
+    fn update(&mut self, sh: &Shared, cfg: &Config, liquid: Option<f32>, cpu: Option<f32>) {
+        let Some(nv) = &self.nv else { return };
+        let temp = nv.temperature();
+        match &cfg.gpu_fans {
+            None => {
+                if self.manual && nv.set_all(None).is_ok() {
+                    self.manual = false;
+                    self.duty = None;
+                    let _ = std::fs::remove_file(gpu_marker());
+                }
+            }
+            Some(mode) => {
+                let target = if temp.is_some_and(|t| t >= GPU_CRITICAL) {
+                    100
+                } else {
+                    target_duty(mode, liquid, cpu, temp, MIN_GPU_FAN_PERCENT)
+                };
+                let d = self.duty.map_or(target, |cur| smooth(cur, target));
+                if !self.manual || Some(d) != self.duty || self.last_write.elapsed() >= Duration::from_secs(10) {
+                    if !self.manual {
+                        let _ = std::fs::create_dir_all(coolrgb_core::config::config_dir());
+                        let _ = std::fs::write(gpu_marker(), b"1");
+                    }
+                    match nv.set_all(Some(d as u32)) {
+                        Ok(()) => {
+                            self.manual = true;
+                            self.last_write = Instant::now();
+                        }
+                        Err(e) => log(&e),
+                    }
+                }
+                self.duty = Some(d);
+            }
+        }
+        let coolers = nv.coolers().unwrap_or_default();
+        let mut st = sh.status.lock().unwrap();
+        st.gpu = temp;
+        st.gpu_fan_rpm = coolers.iter().map(|c| c.rpm).collect();
+        st.gpu_fan_percent = coolers.iter().map(|c| c.percent).collect();
+        st.gpu_fan_manual = coolers.iter().any(|c| c.manual);
+    }
+
+    fn release(&mut self) {
+        if self.manual {
+            if let Some(nv) = &self.nv {
+                if nv.set_all(None).is_ok() {
+                    let _ = std::fs::remove_file(gpu_marker());
+                }
+            }
+        }
     }
 }
 
@@ -422,6 +493,7 @@ pub fn log(msg: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use coolrgb_core::config::TempSource;
 
     #[test]
     fn duty_respects_floor_and_critical() {

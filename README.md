@@ -44,7 +44,7 @@ The protocols come from OpenRGB, OpenLinkHub and liquidctl; see [docs/PROTOCOLS.
    **Start with Windows**. This creates a Task Scheduler task that starts the service with admin rights at
    logon, without a UAC prompt.
 
-To remove it, run `scripts\uninstall.ps1` (add `-KeepSettings` to keep `%APPDATA%\coolrgb`).
+To remove it, run `scripts\uninstall.ps1` (add `-KeepSettings` to keep `C:\ProgramData\CoolRGB`).
 
 ## Using it
 
@@ -70,8 +70,8 @@ To remove it, run `scripts\uninstall.ps1` (add `-KeepSettings` to keep `%APPDATA
 
 ## Files
 
-- Settings: `%APPDATA%\coolrgb\config.json`. The GUI edits it through the service, and changes apply live.
-- Log: `%APPDATA%\coolrgb\daemon.log` (capped at 256 KB).
+- Settings: `C:\ProgramData\CoolRGB\config.json`. The GUI edits it through the service, and changes apply live.
+- Log: `C:\ProgramData\CoolRGB\daemon.log` (capped at 256 KB).
 
 ## Layout
 

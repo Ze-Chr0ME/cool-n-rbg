@@ -1,14 +1,15 @@
 // PawnIO-backed devices: CPU temp, GPU temp, DRAM detection + color, MSI-RGB.
 use coolrgb_core::devices::{dram::CorsairDram, msi_rgb::MsiRgb, smbus::Smbus};
 use coolrgb_core::effects::Rgb;
-use coolrgb_core::sensors::{board_name, CpuTemp, GpuTemp};
+use coolrgb_core::nvapi::NvGpu;
+use coolrgb_core::sensors::{board_name, CpuTemp};
 use std::sync::Arc;
 
 fn main() {
     let board = board_name();
     println!("board: {board:?}");
     match CpuTemp::open() { Ok(c) => println!("cpu: {:?}", c.read()), Err(e) => println!("cpu err {e}") }
-    match GpuTemp::open() { Ok(g) => println!("gpu: {:?}", g.read()), Err(e) => println!("gpu err {e}") }
+    match NvGpu::open() { Ok(g) => println!("gpu: {:?}", g.temperature()), Err(e) => println!("gpu err {e}") }
     let write = std::env::args().any(|a| a == "write");
     match Smbus::open() {
         Ok(bus) => {

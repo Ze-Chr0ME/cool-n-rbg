@@ -17,5 +17,8 @@ Get-Process coolrgbd, coolrgb -ErrorAction SilentlyContinue | Stop-Process -Forc
 schtasks.exe /Delete /F /TN "Cool'n RGB" 2>$null | Out-Null
 Remove-Item -Recurse -Force $dest -ErrorAction SilentlyContinue
 Remove-Item (Join-Path ([Environment]::GetFolderPath('CommonPrograms')) "Cool'n RGB.lnk") -ErrorAction SilentlyContinue
-if (-not $KeepSettings) { Remove-Item -Recurse -Force (Join-Path $env:APPDATA 'coolrgb') -ErrorAction SilentlyContinue }
+if (-not $KeepSettings) {
+    Remove-Item -Recurse -Force (Join-Path $env:ProgramData 'CoolRGB') -ErrorAction SilentlyContinue
+    Remove-Item -Recurse -Force (Join-Path $env:APPDATA 'coolrgb') -ErrorAction SilentlyContinue
+}
 Write-Host 'Cool''n RGB removed.'

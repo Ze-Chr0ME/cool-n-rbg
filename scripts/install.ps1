@@ -22,6 +22,7 @@ function Stop-Service-Handover {
     } catch { }
     Get-Process coolrgbd -ErrorAction SilentlyContinue | Wait-Process -Timeout 10 -ErrorAction SilentlyContinue
     Get-Process coolrgbd, coolrgb -ErrorAction SilentlyContinue | Stop-Process -Force
+    Get-Process coolrgbd, coolrgb -ErrorAction SilentlyContinue | Wait-Process -Timeout 10 -ErrorAction SilentlyContinue
 }
 
 Stop-Service-Handover

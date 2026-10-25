@@ -4,7 +4,7 @@
 
 mod fan_curve;
 
-use coolrgb_core::config::{Config, FanMode, TempSource, MIN_FAN_PERCENT, MIN_PUMP_PERCENT};
+use coolrgb_core::config::{default_gpu_curve, Config, FanMode, TempSource, MIN_FAN_PERCENT, MIN_GPU_FAN_PERCENT, MIN_PUMP_PERCENT};
 use coolrgb_core::effects::{Effect, Rgb};
 use coolrgb_core::ipc::{call, Request, Response, Status};
 use eframe::egui::{self, Color32, RichText};
@@ -48,8 +48,6 @@ struct App {
 
 /// Background I/O so the UI never blocks on the pipe.
 fn worker(link: Arc<Mutex<Link>>, rx: Receiver<Msg>, ctx: egui::Context) {
-    // The daemon skips NVML unless a fan curve needs it; read the GPU here for display.
-    let gpu = coolrgb_core::sensors::GpuTemp::open().ok();
     loop {
         let mut msgs = Vec::new();
         match rx.recv_timeout(Duration::from_millis(1000)) {
@@ -79,10 +77,7 @@ fn worker(link: Arc<Mutex<Link>>, rx: Receiver<Msg>, ctx: egui::Context) {
         {
             let mut l = link.lock().unwrap();
             match st {
-                Ok(Response::Status { mut status }) => {
-                    if status.gpu.is_none() {
-                        status.gpu = gpu.as_ref().and_then(|g| g.read());
-                    }
+                Ok(Response::Status { status }) => {
                     l.status = Some(status);
                     l.error = None;
                 }
@@ -330,6 +325,18 @@ impl App {
             ui.add_space(14.0);
             ui.heading("Fans (all 6)");
             changed |= fan_mode_ui(ui, "fans", &mut cfg.fans, MIN_FAN_PERCENT, temps);
+            ui.add_space(14.0);
+            ui.heading("Graphics card fans");
+            if !st.gpu_fan_rpm.is_empty() {
+                let fans: Vec<String> = st
+                    .gpu_fan_rpm
+                    .iter()
+                    .zip(&st.gpu_fan_percent)
+                    .map(|(r, p)| format!("{r} rpm · {p} %"))
+                    .collect();
+                ui.label(fans.join("    "));
+            }
+            changed |= gpu_fans_ui(ui, &mut cfg.gpu_fans, temps);
         });
         self.dirty |= changed;
     }
@@ -344,7 +351,11 @@ fn fan_mode_ui(ui: &mut egui::Ui, id: &str, mode: &mut FanMode, floor: u8, temps
             changed = true;
         }
         if ui.selectable_label(is_curve, "Curve").clicked() && !is_curve {
-            *mode = FanMode::Curve { source: TempSource::Liquid, points: vec![(30.0, floor), (40.0, 100)] };
+            *mode = if id == "gpu" {
+                default_gpu_curve()
+            } else {
+                FanMode::Curve { source: TempSource::Liquid, points: vec![(30.0, floor), (40.0, 100)] }
+            };
             changed = true;
         }
         ui.label(RichText::new(format!("minimum {floor}%")).weak());
@@ -379,6 +390,35 @@ fn fan_mode_ui(ui: &mut egui::Ui, id: &str, mode: &mut FanMode, floor: u8, temps
             };
             let range = if *source == TempSource::Liquid { (20.0, 60.0) } else { (20.0, 100.0) };
             changed |= fan_curve::editor(ui, id, points, floor, range, current);
+        }
+    }
+    changed
+}
+
+fn gpu_fans_ui(ui: &mut egui::Ui, gpu: &mut Option<FanMode>, temps: (Option<f32>, Option<f32>, Option<f32>)) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        if ui.selectable_label(gpu.is_none(), "Auto (card default)").clicked() && gpu.is_some() {
+            *gpu = None;
+            changed = true;
+        }
+        if ui.selectable_label(gpu.is_some(), "Custom").clicked() && gpu.is_none() {
+            *gpu = Some(default_gpu_curve());
+            changed = true;
+        }
+    });
+    match gpu {
+        None => {
+            ui.label(RichText::new("The card controls its fans, including stopping them when cool.").weak());
+        }
+        Some(mode) => {
+            ui.label(
+                RichText::new(format!(
+                    "Fans never stop in custom mode (card minimum {MIN_GPU_FAN_PERCENT}%). Full speed at 85 °C or if the sensor fails."
+                ))
+                .weak(),
+            );
+            changed |= fan_mode_ui(ui, "gpu", mode, MIN_GPU_FAN_PERCENT, temps);
         }
     }
     changed

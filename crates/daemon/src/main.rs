@@ -185,6 +185,11 @@ fn main() {
             return;
         }
     }
+    // panic = "abort" still runs the hook: never leave the GPU fans stuck at a manual speed.
+    std::panic::set_hook(Box::new(|info| {
+        engine::log(&format!("panic: {info}"));
+        engine::restore_gpu_fans();
+    }));
     let sh = engine::Shared::new(Config::load());
     unsafe {
         SHARED = Some(sh.clone());

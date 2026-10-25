@@ -27,6 +27,7 @@ pub struct DeviceInfo {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Status {
     pub devices: Vec<DeviceInfo>,
     /// Index 0 = pump.
@@ -36,6 +37,9 @@ pub struct Status {
     pub liquid: Option<f32>,
     pub cpu: Option<f32>,
     pub gpu: Option<f32>,
+    pub gpu_fan_rpm: Vec<u32>,
+    pub gpu_fan_percent: Vec<u32>,
+    pub gpu_fan_manual: bool,
     pub messages: Vec<String>,
     pub working_set_kb: u64,
 }
