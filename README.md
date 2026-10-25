@@ -19,11 +19,12 @@ panel is a separate program that you open from the tray. Closing it gives all of
 
 | Device | Lighting | Other |
 |---|---|---|
-| Corsair iCUE Commander Core (AIO pump + 6 fans, 125 LEDs) | yes | pump/fan speed, RPM, liquid temperature |
+| Corsair iCUE Commander Core (AIO pump + 6 fans, 125 LEDs) | yes, one effect per LED port or for the whole hub | pump/fan speed, RPM, liquid temperature |
 | Corsair Vengeance RGB Pro DDR4 x2 (SMBus 0x58, 0x5A) | yes | — |
 | MSI B450 TOMAHAWK onboard RGB (MSI-RGB Super-IO) | yes (single zone, 4-bit color) | — |
 | Corsair Harpoon RGB Wireless (USB cable) | yes | — |
-| Corsair K57 RGB Wireless (Slipstream dongle) | not yet: the keyboard did not answer during testing (asleep) | — |
+| DesignedByGG Ironclad V3 (EVision 320F:511E) | yes (effects sweep across key columns) | — |
+| Corsair K57 RGB Wireless (Slipstream dongle) | no (retired, not planned) | — |
 | CPU (Ryzen Tctl), NVIDIA GPU | — | temperatures for fan curves |
 
 The protocols come from OpenRGB, OpenLinkHub and liquidctl; see [docs/PROTOCOLS.md](docs/PROTOCOLS.md).

@@ -1,16 +1,18 @@
 //! Corsair "V2"/Bragi peripherals in software lighting mode (Harpoon RGB Wireless over USB).
 //! See docs/PROTOCOLS.md.
 use crate::effects::Rgb;
+use crate::ipc::DeviceKind;
 use hidapi::{HidApi, HidDevice};
 
-/// (pid, name, led count) of supported devices; LEDs are written as planar R.., G.., B...
-pub const DEVICES: [(u16, &str, usize); 1] = [(0x1b5e, "Corsair Harpoon RGB Wireless", 2)];
+/// (pid, name, led count, kind) of supported devices; LEDs are written as planar R.., G.., B...
+pub const DEVICES: [(u16, &str, usize, DeviceKind); 1] = [(0x1b5e, "Corsair Harpoon RGB Wireless", 2, DeviceKind::Mouse)];
 
 pub struct CorsairV2 {
     dev: HidDevice,
     prefix: u8,
     light_ctrl: u8,
     pub name: &'static str,
+    pub kind: DeviceKind,
     pub leds: usize,
     /// Switch back to hardware lighting when dropped.
     pub restore_on_drop: bool,
@@ -19,14 +21,14 @@ pub struct CorsairV2 {
 impl CorsairV2 {
     pub fn open_all(api: &HidApi) -> Vec<Result<CorsairV2, String>> {
         let mut out = Vec::new();
-        for &(pid, name, leds) in &DEVICES {
+        for &(pid, name, leds, kind) in &DEVICES {
             for info in api.device_list().filter(|d| {
                 d.vendor_id() == 0x1b1c && d.product_id() == pid && d.usage_page() == 0xff42 && d.usage() == 1
             }) {
                 out.push(
                     info.open_device(api)
                         .map_err(|e| format!("{name}: {e}"))
-                        .and_then(|dev| CorsairV2::init(dev, 0x08, name, leds)),
+                        .and_then(|dev| CorsairV2::init(dev, 0x08, name, leds, kind)),
                 );
             }
         }
@@ -50,8 +52,8 @@ impl CorsairV2 {
         while matches!(self.dev.read_timeout(&mut r, 3), Ok(n) if n > 0) {}
     }
 
-    fn init(dev: HidDevice, prefix: u8, name: &'static str, leds: usize) -> Result<CorsairV2, String> {
-        let mut d = CorsairV2 { dev, prefix, light_ctrl: 0x22, name, leds, restore_on_drop: true };
+    fn init(dev: HidDevice, prefix: u8, name: &'static str, leds: usize, kind: DeviceKind) -> Result<CorsairV2, String> {
+        let mut d = CorsairV2 { dev, prefix, light_ctrl: 0x22, name, kind, leds, restore_on_drop: true };
         d.drain();
         // Software render mode, then lighting control init (OpenRGB SW controller sequence).
         d.xfer(&[0x01, 0x03, 0x00, 0x02], true)?;

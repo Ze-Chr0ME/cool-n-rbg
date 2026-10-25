@@ -4,10 +4,11 @@ use coolrgb_core::config::{Config, FanMode, MIN_FAN_PERCENT, MIN_GPU_FAN_PERCENT
 use coolrgb_core::devices::commander_core::CommanderCore;
 use coolrgb_core::devices::corsair_v2::CorsairV2;
 use coolrgb_core::devices::dram::{self, CorsairDram};
+use coolrgb_core::devices::evision_v2::{self, EvisionV2, KeyboardChange, KeyboardState};
 use coolrgb_core::devices::msi_rgb::MsiRgb;
 use coolrgb_core::devices::smbus::Smbus;
 use coolrgb_core::effects::{Effect, Rgb};
-use coolrgb_core::ipc::{DeviceInfo, Status};
+use coolrgb_core::ipc::{DeviceInfo, DeviceKind, Status};
 use coolrgb_core::nvapi::NvGpu;
 use coolrgb_core::sensors::{board_name, CpuTemp};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -33,6 +34,8 @@ pub struct Shared {
     pub start: Instant,
     /// Set by a handover quit: leave devices in software mode for the next daemon.
     pub handover: AtomicBool,
+    /// Keyboard setting changes waiting for the peripherals thread: (device id, change).
+    pub keyboard_jobs: Mutex<Vec<(String, KeyboardChange)>>,
 }
 
 impl Shared {
@@ -45,6 +48,7 @@ impl Shared {
             rescan_gen: AtomicU64::new(0),
             start: Instant::now(),
             handover: AtomicBool::new(false),
+            keyboard_jobs: Mutex::new(Vec::new()),
         })
     }
 
@@ -90,8 +94,8 @@ impl Shared {
     }
 }
 
-fn info(id: &str, name: &str, leds: usize, ok: bool, detail: impl Into<String>) -> DeviceInfo {
-    DeviceInfo { id: id.into(), name: name.into(), leds, ok, detail: detail.into() }
+fn info(id: &str, name: &str, kind: DeviceKind, leds: usize, ok: bool, detail: impl Into<String>) -> DeviceInfo {
+    DeviceInfo { id: id.into(), name: name.into(), kind, leds, ok, detail: detail.into() }
 }
 
 fn brightness(cfg: &Config) -> f32 {
@@ -169,11 +173,11 @@ fn commander_thread(sh: Arc<Shared>) {
                     next_open = Instant::now() + Duration::from_secs(10);
                 }
                 Some(Err(e)) => {
-                    sh.set_device(info(CC_ID, CC_NAME, 0, false, e));
+                    sh.set_device(info(CC_ID, CC_NAME, DeviceKind::Controller, 0, false, e));
                     next_open = Instant::now() + Duration::from_secs(5);
                 }
                 Some(Ok(d)) => {
-                    sh.set_device(info(CC_ID, CC_NAME, d.led_count(), true, format!("firmware {}", d.firmware)));
+                    sh.set_device(info(CC_ID, CC_NAME, DeviceKind::Controller, d.led_count(), true, format!("firmware {}", d.firmware)));
                     {
                         let mut st = sh.status.lock().unwrap();
                         st.cc_ports_detected = d.detected.to_vec();
@@ -205,10 +209,13 @@ fn commander_thread(sh: Arc<Shared>) {
             next_open = Instant::now();
             continue;
         }
-        let effect = if cfg.lights_on { cfg.effect_for(CC_ID).clone() } else { Effect::Off };
+        let effects: Vec<&Effect> = (0..d.port_leds.len())
+            .map(|p| if cfg.lights_on { cfg.effect_for_port(CC_ID, p) } else { &Effect::Off })
+            .collect();
+        let animated = effects.iter().any(|e| e.is_animated());
         let mut result = Ok(());
-        if changed || effect.is_animated() || d.since_last_color() >= KEEPALIVE {
-            effect.render(sh.t(), brightness(&cfg), &mut buf);
+        if changed || animated || d.since_last_color() >= KEEPALIVE {
+            render_ports(&effects, &d.port_leds, sh.t(), brightness(&cfg), &mut buf);
             result = d.set_colors(&buf);
         }
         if result.is_ok() && last_sensors.elapsed() >= Duration::from_secs(1) {
@@ -237,12 +244,12 @@ fn commander_thread(sh: Arc<Shared>) {
             });
         }
         if let Err(e) = result {
-            sh.set_device(info(CC_ID, CC_NAME, 0, false, e));
+            sh.set_device(info(CC_ID, CC_NAME, DeviceKind::Controller, 0, false, e));
             dev = None;
             next_open = Instant::now() + Duration::from_secs(2);
             continue;
         }
-        let wait = if effect.is_animated() { FRAME } else { IDLE };
+        let wait = if animated { FRAME } else { IDLE };
         sh.nap(wait.saturating_sub(frame_start.elapsed()));
     }
     // Dropping the device hands the hub back to its stored hardware profile.
@@ -250,6 +257,25 @@ fn commander_thread(sh: Arc<Shared>) {
         d.restore_on_drop = !sh.handover.load(Ordering::Relaxed);
     }
     drop(dev);
+}
+
+/// Fill `buf` port by port. Consecutive ports sharing an effect are rendered as one run, so a hub-wide
+/// wave still flows across fans; a port with its own effect gets the whole effect to itself.
+fn render_ports(effects: &[&Effect], port_leds: &[u16], t: f32, bright: f32, buf: &mut [Rgb]) {
+    let mut start = 0;
+    let mut p = 0;
+    while p < effects.len() {
+        let mut end = start + port_leds[p] as usize;
+        let mut q = p + 1;
+        while q < effects.len() && effects[q] == effects[p] {
+            end += port_leds[q] as usize;
+            q += 1;
+        }
+        let end = end.min(buf.len());
+        effects[p].render(t, bright, &mut buf[start.min(end)..end]);
+        start = end;
+        p = q;
+    }
 }
 
 fn board_thread(sh: Arc<Shared>) {
@@ -261,18 +287,18 @@ fn board_thread(sh: Arc<Shared>) {
     let ids: Vec<String> = dimms.iter().map(|d| format!("dram_{:02x}", d.addr)).collect();
     for (n, (d, id)) in dimms.iter().zip(&ids).enumerate() {
         let name = format!("Corsair Vengeance RGB Pro #{}", n + 1);
-        sh.set_device(info(id, &name, dram::LEDS, true, format!("SMBus {:#04x}", d.addr)));
+        sh.set_device(info(id, &name, DeviceKind::Memory, dram::LEDS, true, format!("SMBus {:#04x}", d.addr)));
     }
     let board = board_name();
     let msi = match MsiRgb::detect(&board) {
         Ok(m) => m,
         Err(e) => {
-            sh.set_device(info("motherboard", &board, 1, false, e));
+            sh.set_device(info("motherboard", &board, DeviceKind::Motherboard, 1, false, e));
             None
         }
     };
     if let Some(m) = &msi {
-        sh.set_device(info("motherboard", &format!("MSI {}", m.board), 1, true, "MSI-RGB Super-IO"));
+        sh.set_device(info("motherboard", &format!("MSI {}", m.board), DeviceKind::Motherboard, 1, true, "MSI-RGB Super-IO"));
     }
 
     let mut gen = 0;
@@ -453,9 +479,68 @@ impl GpuFans {
     }
 }
 
+/// USB lighting devices handled by the peripherals thread.
+enum Peripheral {
+    Corsair(CorsairV2),
+    Keyboard(EvisionV2),
+}
+
+impl Peripheral {
+    fn name(&self) -> &'static str {
+        match self {
+            Peripheral::Corsair(d) => d.name,
+            Peripheral::Keyboard(d) => d.name,
+        }
+    }
+
+    /// How often colors must be re-sent even when nothing changed.
+    fn keepalive(&self) -> Duration {
+        match self {
+            Peripheral::Corsair(_) => KEEPALIVE,
+            Peripheral::Keyboard(_) => evision_v2::KEEPALIVE,
+        }
+    }
+
+    fn render(&mut self, effect: &Effect, t: f32, bright: f32, buf: &mut Vec<Rgb>) -> Result<(), String> {
+        match self {
+            Peripheral::Corsair(d) => {
+                buf.resize(d.leds, Rgb::BLACK);
+                effect.render(t, bright, buf);
+                d.set_colors(buf)
+            }
+            // Effects run across the keyboard's columns, so waves sweep left to right.
+            Peripheral::Keyboard(d) => {
+                buf.resize(d.columns(), Rgb::BLACK);
+                effect.render(t, bright, buf);
+                d.set_columns(buf)
+            }
+        }
+    }
+
+    fn kind(&self) -> DeviceKind {
+        match self {
+            Peripheral::Corsair(d) => d.kind,
+            Peripheral::Keyboard(_) => DeviceKind::Keyboard,
+        }
+    }
+
+    fn set_restore(&mut self, restore: bool) {
+        match self {
+            Peripheral::Corsair(d) => d.restore_on_drop = restore,
+            Peripheral::Keyboard(d) => d.restore_on_drop = restore,
+        }
+    }
+}
+
+fn set_keyboard_state(sh: &Shared, state: KeyboardState) {
+    let mut st = sh.status.lock().unwrap();
+    st.keyboards.retain(|k| k.id != state.id);
+    st.keyboards.push(state);
+}
+
 fn peripherals_thread(sh: Arc<Shared>) {
     let Ok(mut api) = hidapi::HidApi::new() else { return };
-    let mut devs: Vec<(String, CorsairV2, Instant)> = Vec::new();
+    let mut devs: Vec<(String, Peripheral, Instant)> = Vec::new();
     let mut next_scan = Instant::now();
     let mut seen_rescan = 0;
     let mut gen = 0;
@@ -468,15 +553,27 @@ fn peripherals_thread(sh: Arc<Shared>) {
             for (id, _, _) in devs.drain(..) {
                 sh.remove_device(&id);
             }
+            sh.status.lock().unwrap().keyboards.clear();
             let _ = api.refresh_devices();
             for (i, r) in CorsairV2::open_all(&api).into_iter().enumerate() {
                 let id = format!("peripheral_{i}");
                 match r {
                     Ok(d) => {
-                        sh.set_device(info(&id, d.name, d.leds, true, "USB"));
-                        devs.push((id, d, Instant::now() - KEEPALIVE));
+                        sh.set_device(info(&id, d.name, d.kind, d.leds, true, "USB"));
+                        devs.push((id, Peripheral::Corsair(d), Instant::now() - KEEPALIVE));
                     }
-                    Err(e) => sh.set_device(info(&id, "Corsair peripheral", 0, false, e)),
+                    Err(e) => sh.set_device(info(&id, "Corsair peripheral", DeviceKind::Other, 0, false, e)),
+                }
+            }
+            for (i, r) in EvisionV2::open_all(&api).into_iter().enumerate() {
+                let id = format!("keyboard_{i}");
+                match r {
+                    Ok(d) => {
+                        sh.set_device(info(&id, d.name, DeviceKind::Keyboard, d.slots, true, "USB · EVision"));
+                        set_keyboard_state(&sh, d.state(&id));
+                        devs.push((id, Peripheral::Keyboard(d), Instant::now() - KEEPALIVE));
+                    }
+                    Err(e) => sh.set_device(info(&id, "EVision keyboard", DeviceKind::Keyboard, 0, false, e)),
                 }
             }
             next_scan = Instant::now() + Duration::from_secs(15);
@@ -490,29 +587,72 @@ fn peripherals_thread(sh: Arc<Shared>) {
             }
             None => false,
         };
-        let mut animated = false;
+        // Settings changes from the control panel.
+        let jobs = std::mem::take(&mut *sh.keyboard_jobs.lock().unwrap());
+        for (job_id, change) in jobs {
+            if let Some((id, Peripheral::Keyboard(k), _)) = devs.iter_mut().find(|(id, _, _)| *id == job_id) {
+                let mut state = k.state(id);
+                if let Err(e) = k.apply(&change).and_then(|()| {
+                    // A new profile may hold another built-in effect; show it right away.
+                    if cfg.lights_on && cfg.onboard_lighting.contains(id.as_str()) && k.direct {
+                        k.hardware_mode()?;
+                    }
+                    Ok(())
+                }) {
+                    log(&e);
+                    state.error = Some(e);
+                } else {
+                    state = k.state(id);
+                }
+                set_keyboard_state(&sh, state);
+            }
+        }
+        let mut wait = IDLE;
         let mut failed = None;
         for (i, (id, d, last)) in devs.iter_mut().enumerate() {
-            let effect: &Effect = if cfg.lights_on { cfg.effect_for(id) } else { &Effect::Off };
-            animated |= effect.is_animated();
-            if changed || effect.is_animated() || last.elapsed() >= KEEPALIVE {
-                buf.resize(d.leds, Rgb::BLACK);
-                effect.render(sh.t(), brightness(&cfg), &mut buf);
-                match d.set_colors(&buf) {
-                    Ok(()) => *last = Instant::now(),
-                    Err(e) => failed = Some((i, e)),
+            // A keyboard set to its built-in effect is left alone, except to turn it dark with the master switch.
+            if let Peripheral::Keyboard(k) = d {
+                if cfg.lights_on && cfg.onboard_lighting.contains(id.as_str()) {
+                    if k.direct {
+                        if let Err(e) = k.hardware_mode() {
+                            failed = Some((i, e));
+                        }
+                    }
+                    continue;
                 }
             }
+            let effect: &Effect = if cfg.lights_on { cfg.effect_for(id) } else { &Effect::Off };
+            if effect.is_animated() {
+                wait = FRAME;
+            }
+            let leaving_onboard = matches!(d, Peripheral::Keyboard(k) if !k.direct);
+            let result = if changed || effect.is_animated() || leaving_onboard {
+                Some(d.render(effect, sh.t(), brightness(&cfg), &mut buf))
+            } else if last.elapsed() >= d.keepalive() {
+                Some(match d {
+                    Peripheral::Keyboard(k) => k.refresh(),
+                    _ => d.render(effect, sh.t(), brightness(&cfg), &mut buf),
+                })
+            } else {
+                None
+            };
+            match result {
+                Some(Ok(())) => *last = Instant::now(),
+                Some(Err(e)) => failed = Some((i, e)),
+                None => {}
+            }
+            // Wake up in time for the next keepalive.
+            wait = wait.min(d.keepalive().saturating_sub(last.elapsed()));
         }
         if let Some((i, e)) = failed {
             let (id, d, _) = devs.remove(i);
-            sh.set_device(info(&id, d.name, 0, false, e));
+            sh.set_device(info(&id, d.name(), d.kind(), 0, false, e));
+            sh.status.lock().unwrap().keyboards.retain(|k| k.id != id);
         }
-        let wait = if animated { FRAME } else { IDLE };
         sh.nap(wait.saturating_sub(frame_start.elapsed()));
     }
     for (_, d, _) in devs.iter_mut() {
-        d.restore_on_drop = !sh.handover.load(Ordering::Relaxed);
+        d.set_restore(!sh.handover.load(Ordering::Relaxed));
     }
 }
 
@@ -542,6 +682,17 @@ mod tests {
         assert_eq!(target_duty(&quiet, Some(30.0), Some(96.0), None, MIN_FAN_PERCENT), 100);
         let cpu_curve = FanMode::Curve { source: TempSource::Cpu, points: vec![(40.0, 40)] };
         assert_eq!(target_duty(&cpu_curve, Some(30.0), None, None, MIN_FAN_PERCENT), 100);
+    }
+
+    #[test]
+    fn ports_render_their_own_effects() {
+        let red = Effect::Static { color: Rgb(255, 0, 0) };
+        let effects = [&Effect::Off, &red, &red, &Effect::Off];
+        let mut buf = vec![Rgb(1, 1, 1); 7];
+        render_ports(&effects, &[1, 2, 0, 4], 0.0, 1.0, &mut buf);
+        assert_eq!(buf[0], Rgb::BLACK);
+        assert_eq!(&buf[1..3], &[Rgb(255, 0, 0); 2]);
+        assert_eq!(&buf[3..], &[Rgb::BLACK; 4]);
     }
 
     #[test]

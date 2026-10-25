@@ -46,6 +46,42 @@ Command interface: usage page FF42, usage 1. `GET 0x12` (= `02 12`) returns PID 
 SET = `01`, GET = `02`, mode register `03`: value `01` hardware, `02` software (OpenRGB SetRenderMode).
 Start tx `0d <opt> <light_ctrl 0x01|0x22>`, block write `06 00 [len LE]` data at offset 8, more `07` data at offset 4, stop `05 01 <opt>`.
 
+## EVision V2 keyboards: DesignedByGG Ironclad V3 320F:511E (interface 1, usage page FF1C usage 92)
+
+Source: OpenRGB `EVisionV2KeyboardController` (lists the Ironclad V1, 320F:5041). The stock app
+`ICL03.exe` hardcodes 320F/511E and talks to the same collection with `HidD_SetOutputReport`.
+
+Every request and reply is one 64-byte report:
+`[0]=04 (report id) [1..3]=checksum LE (sum of bytes 3..63) [3]=cmd [4]=size [5..7]=offset LE [7]=status [8..]=data (max 56)`.
+The reply echoes bytes 1..7; `[7]` non-zero = error.
+
+| cmd | use |
+|---|---|
+| `03` read capabilities, size 7 | `[0..2]=AA 55`, `[5]`=color slots (126 here = 21 columns x 6 rows) |
+| `12` send dynamic colors | RGB per slot, written at byte offset `slot*3`, chunked by 56 |
+| `13` end dynamic colors | keyboard returns to its stored effect |
+
+| `01` / `02` begin / end configure | wrap every `06` write |
+| `05` read config, `06` write config | stored settings, offset = config address |
+
+Capabilities (cmd `03`, 56 bytes read on this keyboard): `[5]`=slots, `[21..23]`=VID LE, `[31..]`=supported
+built-in effect codes, zero-terminated (`01..0f 11 10 12 14`).
+
+Config memory: `0x00` = active profile (0..2). Profile `p` at `1 + p*0x40`: `+0` effect, `+1` brightness
+0..4, `+2` speed 0 (fast)..5, `+3` direction (0 = counter-clockwise, matches the stock app), `+4` random
+colors (non-zero), `+5..8` RGB; we rewrite the first 18 bytes and keep `+8..18`. `+0x15` USB polling
+rate (0..3 = 1000/500/250/125 Hz), `+0x18` debounce (0..3 = 5/10/15/20 ms). Key map from `0xC0`,
+3 bytes per key (`20 00 <HID usage>`), repeated per profile.
+
+Polling and debounce were captured passively (`examples/evision_listen.rs`) while clicking each option in
+ICL03 in a known order, 2026-10-25. ICL03 saves by rewriting config `0x00..0x46` inside begin/end
+configure, and sometimes sends `13` (end dynamic colors), which drops our direct mode; the service
+re-sends its whole frame every second to take it back.
+
+Slot = `column*6 + row`; slots without a key are ignored. Direct colors revert unless refreshed about
+every 200 ms: we re-send slot 0 (3 bytes) every 150 ms. Verified 2026-10-25: capabilities, color writes
+and refresh all acknowledged.
+
 ## PawnIO (driver installed at C:\Program Files\PawnIO, modules in vendor\pawnio)
 
 `PawnIOLib.dll`: `pawnio_open(&h)`, `pawnio_load(h, blob, len)`, `pawnio_execute(h, "ioctl_name", in u64[], n, out u64[], n, &ret)`.

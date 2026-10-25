@@ -4,9 +4,10 @@
 
 mod fan_curve;
 
-use coolrgb_core::config::{default_gpu_curve, presets, Config, FanMode, TempSource, MIN_FAN_PERCENT, MIN_GPU_FAN_PERCENT, MIN_PUMP_PERCENT};
+use coolrgb_core::config::{default_gpu_curve, port_key, presets, Config, FanMode, TempSource, MIN_FAN_PERCENT, MIN_GPU_FAN_PERCENT, MIN_PUMP_PERCENT};
 use coolrgb_core::effects::{Effect, Rgb};
-use coolrgb_core::ipc::{call, Request, Response, Status};
+use coolrgb_core::devices::evision_v2::{KeyboardChange, KeyboardState, OnboardLighting, DEBOUNCE_MS, MAX_BRIGHTNESS, MODES, POLLING_HZ, PROFILES, SLOWEST};
+use coolrgb_core::ipc::{call, DeviceInfo, DeviceKind, Request, Response, Status};
 use eframe::egui::{self, Color32, RichText};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -21,6 +22,7 @@ struct Link {
 
 enum Msg {
     SetConfig(Config),
+    Keyboard { id: String, change: KeyboardChange },
     Rescan,
     Quit,
 }
@@ -43,7 +45,15 @@ struct App {
     tab: Tab,
     /// None = edit the global effect, Some(id) = a device override.
     target: Option<String>,
+    /// With the Commander Core targeted: None = whole hub, Some(p) = one LED port.
+    port: Option<usize>,
     started_daemon: bool,
+    /// Device type selected on the Devices tab.
+    dev_kind: DeviceKind,
+    /// Keyboard built-in effect being edited (device id, values) and whether it still has to be sent.
+    kb_edit: Option<(String, OnboardLighting)>,
+    kb_dirty: bool,
+    kb_last_edit: Instant,
 }
 
 /// Background I/O so the UI never blocks on the pipe.
@@ -63,6 +73,7 @@ fn worker(link: Arc<Mutex<Link>>, rx: Receiver<Msg>, ctx: egui::Context) {
                 Msg::SetConfig(c) => latest_cfg = Some(c),
                 Msg::Rescan => drop(call(&Request::Rescan)),
                 Msg::Quit => drop(call(&Request::Quit)),
+                Msg::Keyboard { id, change } => drop(call(&Request::Keyboard { id, change })),
             }
         }
         if let Some(c) = latest_cfg {
@@ -230,7 +241,12 @@ impl App {
                 _ => Tab::Lighting,
             },
             target: None,
+            port: None,
             started_daemon: false,
+            dev_kind: DeviceKind::Keyboard,
+            kb_edit: None,
+            kb_dirty: false,
+            kb_last_edit: Instant::now(),
         }
     }
 
@@ -251,11 +267,32 @@ impl App {
             egui::ComboBox::from_id_salt("target").selected_text(current).width(260.0).show_ui(ui, |ui| {
                 ui.selectable_value(&mut self.target, None, "All devices");
                 for d in &status.devices {
-                    let label = if cfg.per_device.contains_key(&d.id) { format!("{} (custom)", d.name) } else { d.name.clone() };
-                    ui.selectable_value(&mut self.target, Some(d.id.clone()), label);
+                    let prefix = format!("{}:", d.id);
+                    let custom = cfg.per_device.keys().any(|k| k == &d.id || k.starts_with(&prefix));
+                    let label = if custom { format!("{} (custom)", d.name) } else { d.name.clone() };
+                    if ui.selectable_value(&mut self.target, Some(d.id.clone()), label).changed() {
+                        self.port = None;
+                    }
                 }
             });
         });
+        let hub = self.target.as_deref() == Some(CC_ID) && !status.cc_ports.is_empty();
+        if hub {
+            ui.horizontal(|ui| {
+                ui.label("Port");
+                let name = |p: usize| port_label(p, status.cc_ports[p]);
+                let current = self.port.map_or("Whole hub".to_string(), name);
+                egui::ComboBox::from_id_salt("port").selected_text(current).width(260.0).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.port, None, "Whole hub");
+                    for p in (0..status.cc_ports.len()).filter(|&p| status.cc_ports[p] > 0) {
+                        let label = if cfg.per_device.contains_key(&port_key(CC_ID, p)) { format!("{} (custom)", name(p)) } else { name(p) };
+                        ui.selectable_value(&mut self.port, Some(p), label);
+                    }
+                });
+            });
+        } else {
+            self.port = None;
+        }
         ui.separator();
         if !cfg.lights_on {
             ui.label(RichText::new("Lights are off. The preview shows what they will look like when switched on.").color(Color32::from_rgb(230, 170, 80)));
@@ -269,21 +306,37 @@ impl App {
                 preview(ui, &cfg.effect, bright);
             }
             Some(id) => {
-                let mut custom = cfg.per_device.contains_key(&id);
-                if ui.checkbox(&mut custom, "Use a custom effect for this device").changed() {
+                // A port inherits from its hub, the hub from the global effect.
+                let (key, what, follows) = match self.port {
+                    Some(p) => (port_key(&id, p), "port", "Follows the effect set for the whole hub."),
+                    None => (id.clone(), "device", "Follows the effect set for all devices."),
+                };
+                let mut custom = cfg.per_device.contains_key(&key);
+                if ui.checkbox(&mut custom, format!("Use a custom effect for this {what}")).changed() {
                     if custom {
-                        cfg.per_device.insert(id.clone(), cfg.effect.clone());
+                        let start = cfg.effect_for(&id).clone();
+                        cfg.per_device.insert(key.clone(), start);
                     } else {
-                        cfg.per_device.remove(&id);
+                        cfg.per_device.remove(&key);
                     }
                     changed = true;
                 }
-                if let Some(e) = cfg.per_device.get_mut(&id) {
+                if let Some(e) = cfg.per_device.get_mut(&key) {
                     changed |= effect_ui(ui, e);
                     ui.add_space(8.0);
                     preview(ui, e, bright);
                 } else {
-                    ui.label(RichText::new("Follows the effect set for all devices.").weak());
+                    ui.label(RichText::new(follows).weak());
+                }
+                if hub && self.port.is_none() {
+                    let own: Vec<String> = (0..status.cc_ports.len())
+                        .filter(|&p| status.cc_ports[p] > 0 && cfg.per_device.contains_key(&port_key(&id, p)))
+                        .map(|p| port_label(p, status.cc_ports[p]))
+                        .collect();
+                    if !own.is_empty() {
+                        ui.add_space(6.0);
+                        ui.label(RichText::new(format!("Own effect, not changed here: {}", own.join(", "))).weak());
+                    }
                 }
             }
         }
@@ -353,6 +406,229 @@ impl App {
             changed |= gpu_fans_ui(ui, &mut cfg.gpu_fans, temps);
         });
         self.dirty |= changed;
+    }
+}
+
+impl App {
+    /// Devices tab: a list of device types on the left, that type's devices and settings on the right.
+    fn devices(&mut self, ui: &mut egui::Ui, st: &Status) {
+        let mut kinds: Vec<DeviceKind> = st.devices.iter().map(|d| d.kind).collect();
+        kinds.sort();
+        kinds.dedup();
+        if !kinds.contains(&self.dev_kind) {
+            self.dev_kind = kinds.first().copied().unwrap_or_default();
+        }
+        ui.horizontal_top(|ui| {
+            ui.vertical(|ui| {
+                ui.set_width(120.0);
+                for k in &kinds {
+                    if ui.selectable_label(self.dev_kind == *k, RichText::new(k.label()).size(15.0)).clicked() {
+                        self.dev_kind = *k;
+                    }
+                    ui.add_space(2.0);
+                }
+                ui.add_space(12.0);
+                if ui.button("Rescan devices").clicked() {
+                    let _ = self.tx.send(Msg::Rescan);
+                }
+            });
+            ui.separator();
+            ui.vertical(|ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| self.device_page(ui, st));
+            });
+        });
+    }
+
+    fn device_page(&mut self, ui: &mut egui::Ui, st: &Status) {
+        let devs: Vec<&DeviceInfo> = st.devices.iter().filter(|d| d.kind == self.dev_kind).collect();
+        egui::Grid::new("devs").striped(true).spacing([16.0, 6.0]).show(ui, |ui| {
+            for h in ["Device", "LEDs", "State", "Details"] {
+                ui.label(RichText::new(h).strong());
+            }
+            ui.end_row();
+            for d in &devs {
+                ui.label(&d.name);
+                ui.label(d.leds.to_string());
+                if d.ok {
+                    ui.label(RichText::new("OK").color(Color32::from_rgb(90, 200, 120)));
+                } else {
+                    ui.label(RichText::new("Error").color(Color32::from_rgb(230, 90, 80)));
+                }
+                ui.label(RichText::new(&d.detail).weak());
+                ui.end_row();
+            }
+        });
+        ui.add_space(12.0);
+        match self.dev_kind {
+            DeviceKind::Keyboard => {
+                for kb in &st.keyboards {
+                    let name = devs.iter().find(|d| d.id == kb.id).map_or(kb.id.as_str(), |d| d.name.as_str());
+                    self.keyboard_ui(ui, kb, name);
+                }
+                ui.add_space(10.0);
+                if ui.button("Windows keyboard settings…").on_hover_text("Key repeat delay and rate").clicked() {
+                    let _ = std::process::Command::new("control").arg("keyboard").spawn();
+                }
+            }
+            DeviceKind::Controller if !st.cc_ports.is_empty() => {
+                ui.heading("Commander Core LED ports");
+                ui.label(
+                    RichText::new("Pick the fan type on a port if its lights stay dark or show mixed colors (the hub sometimes misdetects them).")
+                        .weak(),
+                );
+                let cfg = self.cfg.as_mut().unwrap();
+                if led_ports_ui(ui, &mut cfg.led_ports, &st.cc_ports_detected, &st.cc_ports) {
+                    self.dirty = true;
+                }
+                ui.add_space(6.0);
+                ui.label(RichText::new("Per-port effects are on the Lighting tab (Apply to: Commander Core, then pick a port).").weak());
+            }
+            _ => {
+                ui.label(RichText::new("Lighting for these devices is set on the Lighting tab. No other settings yet.").weak());
+            }
+        }
+    }
+
+    fn keyboard_ui(&mut self, ui: &mut egui::Ui, kb: &KeyboardState, name: &str) {
+        ui.heading(name);
+        if let Some(e) = &kb.error {
+            ui.label(RichText::new(e).color(Color32::from_rgb(230, 90, 80)));
+        }
+        let cfg = self.cfg.as_mut().unwrap();
+        ui.horizontal(|ui| {
+            ui.label("Lighting");
+            let onboard = cfg.onboard_lighting.contains(&kb.id);
+            if ui.selectable_label(!onboard, "Cool'n RGB effects").clicked() && onboard {
+                cfg.onboard_lighting.remove(&kb.id);
+                self.dirty = true;
+            }
+            if ui.selectable_label(onboard, "Built-in effect").clicked() && !onboard {
+                cfg.onboard_lighting.insert(kb.id.clone());
+                self.dirty = true;
+            }
+        });
+        ui.label(
+            RichText::new("The built-in effect runs on the keyboard itself. It also shows whenever Cool'n RGB isn't running. \"Lights: off\" still turns the keyboard dark.")
+                .weak(),
+        );
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.label("Onboard profile");
+            for p in 0..PROFILES {
+                if ui.selectable_label(kb.profile == p, format!("{}", p + 1)).clicked() && kb.profile != p {
+                    self.kb_edit = None;
+                    let _ = self.tx.send(Msg::Keyboard { id: kb.id.clone(), change: KeyboardChange::Profile { profile: p } });
+                }
+            }
+        });
+        ui.label(RichText::new("Each profile stores its own built-in effect, debounce, polling rate (and key settings made in the stock app).").weak());
+        ui.add_space(8.0);
+        egui::Grid::new(("kb-timing", &kb.id)).spacing([14.0, 8.0]).show(ui, |ui| {
+            ui.label("Debounce");
+            ui.horizontal(|ui| {
+                for ms in DEBOUNCE_MS.iter().rev() {
+                    if ui.selectable_label(kb.debounce_ms == Some(*ms), format!("{ms} ms")).clicked() && kb.debounce_ms != Some(*ms) {
+                        let _ = self.tx.send(Msg::Keyboard { id: kb.id.clone(), change: KeyboardChange::Debounce { ms: *ms } });
+                    }
+                }
+            });
+            ui.end_row();
+            ui.label("USB polling rate");
+            ui.horizontal(|ui| {
+                for hz in POLLING_HZ {
+                    if ui.selectable_label(kb.polling_hz == Some(hz), format!("{hz} Hz")).clicked() && kb.polling_hz != Some(hz) {
+                        let _ = self.tx.send(Msg::Keyboard { id: kb.id.clone(), change: KeyboardChange::PollingRate { hz } });
+                    }
+                }
+            });
+            ui.end_row();
+        });
+        ui.label(RichText::new("Lower debounce reacts faster; raise it if a key sometimes types twice.").weak());
+        ui.add_space(8.0);
+        let Some(stored) = kb.lighting else { return };
+        // Edits stay local until the user pauses, so dragging a slider doesn't rewrite the keyboard's memory each frame.
+        let mut l = match &self.kb_edit {
+            Some((id, l)) if *id == kb.id => *l,
+            _ => stored,
+        };
+        let before = l;
+        ui.label(RichText::new("Built-in effect").strong());
+        egui::Grid::new(("kb-onboard", &kb.id)).spacing([14.0, 8.0]).show(ui, |ui| {
+            ui.label("Effect");
+            let current = MODES.iter().find(|m| m.0 == l.mode).map_or(format!("{:#04x}", l.mode), |m| m.1.to_string());
+            egui::ComboBox::from_id_salt(("kb-mode", &kb.id)).selected_text(current).width(300.0).show_ui(ui, |ui| {
+                for (code, label) in MODES.iter().filter(|m| kb.modes.contains(&m.0)) {
+                    ui.selectable_value(&mut l.mode, *code, *label);
+                }
+            });
+            ui.end_row();
+            ui.label("Brightness");
+            ui.add(egui::Slider::new(&mut l.brightness, 0..=MAX_BRIGHTNESS).custom_formatter(|v, _| {
+                if v == 0.0 { "off".into() } else { format!("{v}") }
+            }));
+            ui.end_row();
+            ui.label("Speed");
+            let mut fast = SLOWEST - l.speed.min(SLOWEST);
+            if ui.add(egui::Slider::new(&mut fast, 0..=SLOWEST).custom_formatter(|v, _| match v as u8 {
+                0 => "slowest".into(),
+                SLOWEST => "fastest".into(),
+                v => format!("{v}"),
+            })).changed() {
+                l.speed = SLOWEST - fast;
+            }
+            ui.end_row();
+            ui.label("Direction");
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut l.direction, 1, "Clockwise / right");
+                ui.selectable_value(&mut l.direction, 0, "Counter-clockwise / left");
+            });
+            ui.end_row();
+            ui.label("Color");
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut l.random_colors, "Random colors");
+                ui.add_enabled_ui(!l.random_colors, |ui| {
+                    let mut c = [l.color.0, l.color.1, l.color.2];
+                    if ui.color_edit_button_srgb(&mut c).changed() {
+                        l.color = Rgb(c[0], c[1], c[2]);
+                    }
+                    for p in PRESETS {
+                        let (rect, resp) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::click());
+                        ui.painter().rect_filled(rect, 4.0, rgb32(p));
+                        if resp.clicked() {
+                            l.color = p;
+                        }
+                    }
+                });
+            });
+            ui.end_row();
+        });
+        if l != before {
+            self.kb_edit = Some((kb.id.clone(), l));
+            self.kb_last_edit = Instant::now();
+            self.kb_dirty = true;
+        }
+        let pending = self.kb_dirty || matches!(&self.kb_edit, Some((id, e)) if *id == kb.id && *e != stored);
+        if pending {
+            ui.label(RichText::new("Saving to the keyboard…").weak());
+        }
+    }
+
+    /// Send a paused keyboard edit; drop the local copy once the keyboard reports it back.
+    fn flush_keyboard_edit(&mut self, ctx: &egui::Context, st: Option<&Status>) {
+        let Some((id, l)) = self.kb_edit.clone() else { return };
+        if self.kb_dirty {
+            if self.kb_last_edit.elapsed() >= Duration::from_millis(500) {
+                let _ = self.tx.send(Msg::Keyboard { id, change: KeyboardChange::Lighting { lighting: l } });
+                self.kb_dirty = false;
+            } else {
+                ctx.request_repaint_after(Duration::from_millis(100));
+            }
+        } else {
+            let stored = st.and_then(|s| s.keyboards.iter().find(|k| k.id == id)).and_then(|k| k.lighting);
+            if stored == Some(l) || self.kb_last_edit.elapsed() >= Duration::from_secs(5) {
+                self.kb_edit = None;
+            }
+        }
     }
 }
 
@@ -448,6 +724,16 @@ const PORT_TYPES: [(u16, &str); 8] = [
     (29, "AIO pump (29)"),
     (34, "QL fan (34)"),
 ];
+
+/// Daemon device id of the Commander Core.
+const CC_ID: &str = "commander_core";
+
+/// "Port 3 · LL fan (16)" style name of a Commander Core LED port.
+fn port_label(p: usize, leds: u16) -> String {
+    let base = if p == 0 { "Pump port".to_string() } else { format!("Port {p}") };
+    let kind = PORT_TYPES.iter().find(|t| t.0 == leds).map_or(format!("{leds} LEDs"), |t| t.1.to_string());
+    format!("{base} · {kind}")
+}
 
 fn led_ports_ui(ui: &mut egui::Ui, ports: &mut Vec<Option<u16>>, detected: &[u16], driven: &[u16]) -> bool {
     let mut changed = false;
@@ -551,41 +837,7 @@ impl eframe::App for App {
             match self.tab {
                 Tab::Lighting => self.lighting(ui, &st),
                 Tab::Fans => self.fans(ui, &st),
-                Tab::Devices => {
-                    egui::Grid::new("devs").striped(true).spacing([16.0, 6.0]).show(ui, |ui| {
-                        for h in ["Device", "LEDs", "State", "Details"] {
-                            ui.label(RichText::new(h).strong());
-                        }
-                        ui.end_row();
-                        for d in &st.devices {
-                            ui.label(&d.name);
-                            ui.label(d.leds.to_string());
-                            if d.ok {
-                                ui.label(RichText::new("OK").color(Color32::from_rgb(90, 200, 120)));
-                            } else {
-                                ui.label(RichText::new("Error").color(Color32::from_rgb(230, 90, 80)));
-                            }
-                            ui.label(RichText::new(&d.detail).weak());
-                            ui.end_row();
-                        }
-                    });
-                    ui.add_space(10.0);
-                    if ui.button("Rescan devices").clicked() {
-                        let _ = self.tx.send(Msg::Rescan);
-                    }
-                    if !st.cc_ports.is_empty() {
-                        ui.add_space(16.0);
-                        ui.heading("Commander Core LED ports");
-                        ui.label(
-                            RichText::new("Pick the fan type on a port if its lights stay dark or show mixed colors (the hub sometimes misdetects them).")
-                                .weak(),
-                        );
-                        let cfg = self.cfg.as_mut().unwrap();
-                        if led_ports_ui(ui, &mut cfg.led_ports, &st.cc_ports_detected, &st.cc_ports) {
-                            self.dirty = true;
-                        }
-                    }
-                }
+                Tab::Devices => self.devices(ui, &st),
                 Tab::Settings => {
                     let cfg = self.cfg.as_mut().unwrap();
                     if ui.checkbox(&mut cfg.autostart, "Start with Windows").changed() {
@@ -608,6 +860,7 @@ impl eframe::App for App {
             }
         });
 
+        self.flush_keyboard_edit(ui.ctx(), status.as_ref());
         if self.dirty {
             self.last_edit = Instant::now();
         }
