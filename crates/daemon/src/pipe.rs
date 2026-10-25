@@ -102,6 +102,13 @@ fn respond(sh: &Shared, req: &Request) -> Response {
         Request::SetConfig { config } => {
             let mut c = config.clone();
             c.brightness = c.brightness.min(100);
+            let old_autostart = sh.config.lock().unwrap().autostart;
+            if c.autostart != old_autostart {
+                if let Err(e) = crate::autostart::set(c.autostart) {
+                    log(&format!("autostart: {e}"));
+                    c.autostart = old_autostart;
+                }
+            }
             if let Err(e) = c.save() {
                 log(&format!("saving config: {e}"));
             }
@@ -114,5 +121,9 @@ fn respond(sh: &Shared, req: &Request) -> Response {
             Response::Ok
         }
         Request::Quit => Response::Ok,
+        Request::Handover => {
+            sh.handover.store(true, Ordering::Relaxed);
+            Response::Ok
+        }
     }
 }

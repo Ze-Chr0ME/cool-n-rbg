@@ -29,6 +29,8 @@ pub struct Shared {
     pub start: Instant,
     /// Milliseconds since `start` of the last GUI status request.
     pub gui_seen_ms: AtomicU64,
+    /// Set by a handover quit: leave devices in software mode for the next daemon.
+    pub handover: AtomicBool,
 }
 
 impl Shared {
@@ -41,6 +43,7 @@ impl Shared {
             rescan_gen: AtomicU64::new(0),
             start: Instant::now(),
             gui_seen_ms: AtomicU64::new(0),
+            handover: AtomicBool::new(false),
         })
     }
 
@@ -235,6 +238,9 @@ fn commander_thread(sh: Arc<Shared>) {
         sh.nap(wait.saturating_sub(frame_start.elapsed()));
     }
     // Dropping the device hands the hub back to its stored hardware profile.
+    if let Some(d) = dev.as_mut() {
+        d.restore_on_drop = !sh.handover.load(Ordering::Relaxed);
+    }
     drop(dev);
 }
 
@@ -385,6 +391,9 @@ fn peripherals_thread(sh: Arc<Shared>) {
         }
         let wait = if animated { FRAME } else { IDLE };
         sh.nap(wait.saturating_sub(frame_start.elapsed()));
+    }
+    for (_, d, _) in devs.iter_mut() {
+        d.restore_on_drop = !sh.handover.load(Ordering::Relaxed);
     }
 }
 

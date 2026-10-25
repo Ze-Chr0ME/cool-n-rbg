@@ -1,6 +1,7 @@
 //! coolrgbd: background RGB + fan service with a tray icon. No console, no GUI toolkit.
 #![windows_subsystem = "windows"]
 
+mod autostart;
 mod engine;
 mod pipe;
 
@@ -194,7 +195,7 @@ fn main() {
         THREADS = engine::spawn(sh.clone());
     }
     pipe::serve(sh.clone(), |req| {
-        if matches!(req, Request::Quit) {
+        if matches!(req, Request::Quit | Request::Handover) {
             let h = HWND_MAIN.load(Ordering::Relaxed);
             unsafe { PostMessageW(h as HWND, WM_QUIT_REQUEST, 0, 0) };
         }

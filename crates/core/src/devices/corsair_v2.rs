@@ -12,6 +12,8 @@ pub struct CorsairV2 {
     light_ctrl: u8,
     pub name: &'static str,
     pub leds: usize,
+    /// Switch back to hardware lighting when dropped.
+    pub restore_on_drop: bool,
 }
 
 impl CorsairV2 {
@@ -49,7 +51,7 @@ impl CorsairV2 {
     }
 
     fn init(dev: HidDevice, prefix: u8, name: &'static str, leds: usize) -> Result<CorsairV2, String> {
-        let mut d = CorsairV2 { dev, prefix, light_ctrl: 0x22, name, leds };
+        let mut d = CorsairV2 { dev, prefix, light_ctrl: 0x22, name, leds, restore_on_drop: true };
         d.drain();
         // Software render mode, then lighting control init (OpenRGB SW controller sequence).
         d.xfer(&[0x01, 0x03, 0x00, 0x02], true)?;
@@ -97,6 +99,8 @@ impl CorsairV2 {
 
 impl Drop for CorsairV2 {
     fn drop(&mut self) {
-        self.hardware_mode();
+        if self.restore_on_drop {
+            self.hardware_mode();
+        }
     }
 }

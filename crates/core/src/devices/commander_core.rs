@@ -26,6 +26,8 @@ pub struct CommanderCore {
     /// Fan/pump present per channel.
     pub connected: [bool; CHANNELS],
     last_color_write: Instant,
+    /// Switch back to the stored hardware profile when dropped.
+    pub restore_on_drop: bool,
 }
 
 impl CommanderCore {
@@ -42,6 +44,7 @@ impl CommanderCore {
                 port_leds: [0; CHANNELS],
                 connected: [false; CHANNELS],
                 last_color_write: Instant::now() - Duration::from_secs(60),
+                restore_on_drop: true,
             };
             cc.init()?;
             Ok(cc)
@@ -178,6 +181,8 @@ impl CommanderCore {
 
 impl Drop for CommanderCore {
     fn drop(&mut self) {
-        self.hardware_mode();
+        if self.restore_on_drop {
+            self.hardware_mode();
+        }
     }
 }

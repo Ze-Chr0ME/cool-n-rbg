@@ -13,6 +13,8 @@ pub enum Request {
     SetConfig { config: Config },
     Rescan,
     Quit,
+    /// Quit without handing devices back to their hardware lighting (a new daemon takes over right away).
+    Handover,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

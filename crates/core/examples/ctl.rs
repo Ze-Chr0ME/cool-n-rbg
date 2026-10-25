@@ -7,6 +7,7 @@ fn main() {
         Some("config") => Request::GetConfig,
         Some("rescan") => Request::Rescan,
         Some("quit") => Request::Quit,
+        Some("handover") => Request::Handover,
         Some("set") => Request::SetConfig {
             config: serde_json::from_slice(&std::fs::read(&args[1]).unwrap()).unwrap(),
         },
