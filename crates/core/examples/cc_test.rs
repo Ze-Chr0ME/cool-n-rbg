@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 fn main() {
     let api = hidapi::HidApi::new().unwrap();
-    let mut cc = CommanderCore::open(&api).expect("no commander core").expect("init");
+    let mut cc = CommanderCore::open(&api, &[]).expect("no commander core").expect("init");
     println!("fw {} leds {:?} total {} connected {:?}", cc.firmware, cc.port_leds, cc.led_count(), cc.connected);
     let n = cc.led_count();
     for c in [Rgb(255, 0, 0), Rgb(0, 255, 0), Rgb(0, 0, 255)] {

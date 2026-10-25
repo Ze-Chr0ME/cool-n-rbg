@@ -147,6 +147,7 @@ fn commander_thread(sh: Arc<Shared>) {
     let mut duty: Option<[u8; 7]> = None;
     let mut sent = [0u8; 7];
     let mut last_duty_write = Instant::now() - Duration::from_secs(10);
+    let mut led_ports = Vec::new();
 
     while !sh.stopped() {
         let rescan = sh.rescan_gen.load(Ordering::Relaxed);
@@ -161,7 +162,8 @@ fn commander_thread(sh: Arc<Shared>) {
                 continue;
             }
             let _ = api.refresh_devices();
-            match CommanderCore::open(&api) {
+            let ports = sh.config.lock().unwrap().led_ports.clone();
+            match CommanderCore::open(&api, &ports) {
                 None => {
                     sh.remove_device(CC_ID);
                     next_open = Instant::now() + Duration::from_secs(10);
@@ -172,6 +174,12 @@ fn commander_thread(sh: Arc<Shared>) {
                 }
                 Some(Ok(d)) => {
                     sh.set_device(info(CC_ID, CC_NAME, d.led_count(), true, format!("firmware {}", d.firmware)));
+                    {
+                        let mut st = sh.status.lock().unwrap();
+                        st.cc_ports_detected = d.detected.to_vec();
+                        st.cc_ports = d.port_leds.to_vec();
+                    }
+                    led_ports = ports;
                     buf = vec![Rgb::BLACK; d.led_count()];
                     gen = 0;
                     sent = [0; 7];
@@ -189,6 +197,14 @@ fn commander_thread(sh: Arc<Shared>) {
             }
             None => false,
         };
+        // A new LED port layout needs the hub set up again.
+        if cfg.led_ports != led_ports {
+            // Reopen straight away; no detour through the hardware lighting profile.
+            d.restore_on_drop = false;
+            dev = None;
+            next_open = Instant::now();
+            continue;
+        }
         let effect = if cfg.lights_on { cfg.effect_for(CC_ID).clone() } else { Effect::Off };
         let mut result = Ok(());
         if changed || effect.is_animated() || d.since_last_color() >= KEEPALIVE {

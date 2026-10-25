@@ -438,6 +438,40 @@ fn gpu_fans_ui(ui: &mut egui::Ui, gpu: &mut Option<FanMode>, temps: (Option<f32>
     changed
 }
 
+const PORT_TYPES: [(u16, &str); 8] = [
+    (0, "Nothing"),
+    (4, "ML PRO fan (4 LEDs)"),
+    (8, "8-LED fan (AIO / AF / ML / SP Elite)"),
+    (10, "LED strip (10)"),
+    (12, "HD fan (12)"),
+    (16, "LL fan (16)"),
+    (29, "AIO pump (29)"),
+    (34, "QL fan (34)"),
+];
+
+fn led_ports_ui(ui: &mut egui::Ui, ports: &mut Vec<Option<u16>>, detected: &[u16], driven: &[u16]) -> bool {
+    let mut changed = false;
+    if ports.len() < driven.len() {
+        ports.resize(driven.len(), None);
+    }
+    egui::Grid::new("cc-ports").spacing([16.0, 6.0]).show(ui, |ui| {
+        for (i, slot) in ports.iter_mut().enumerate().take(driven.len()) {
+            ui.label(if i == 0 { "Pump port".to_string() } else { format!("Port {i}") });
+            let name = |n: u16| PORT_TYPES.iter().find(|t| t.0 == n).map_or(format!("{n} LEDs"), |t| t.1.to_string());
+            let auto = format!("Auto (hub says {}, using {})", detected.get(i).copied().unwrap_or(0), name(driven[i]));
+            let text = slot.map_or(auto.clone(), name);
+            egui::ComboBox::from_id_salt(("cc-port", i)).selected_text(text).width(320.0).show_ui(ui, |ui| {
+                changed |= ui.selectable_value(slot, None, auto).changed();
+                for (n, label) in PORT_TYPES {
+                    changed |= ui.selectable_value(slot, Some(n), label).changed();
+                }
+            });
+            ui.end_row();
+        }
+    });
+    changed
+}
+
 fn source_name(s: TempSource) -> &'static str {
     match s {
         TempSource::Liquid => "Liquid (AIO)",
@@ -538,6 +572,18 @@ impl eframe::App for App {
                     ui.add_space(10.0);
                     if ui.button("Rescan devices").clicked() {
                         let _ = self.tx.send(Msg::Rescan);
+                    }
+                    if !st.cc_ports.is_empty() {
+                        ui.add_space(16.0);
+                        ui.heading("Commander Core LED ports");
+                        ui.label(
+                            RichText::new("Pick the fan type on a port if its lights stay dark or show mixed colors (the hub sometimes misdetects them).")
+                                .weak(),
+                        );
+                        let cfg = self.cfg.as_mut().unwrap();
+                        if led_ports_ui(ui, &mut cfg.led_ports, &st.cc_ports_detected, &st.cc_ports) {
+                            self.dirty = true;
+                        }
                     }
                 }
                 Tab::Settings => {

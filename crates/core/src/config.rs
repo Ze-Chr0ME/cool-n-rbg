@@ -81,6 +81,8 @@ pub struct Config {
     pub fans: FanMode,
     /// `None` = the graphics card's own automatic curve (including zero-RPM).
     pub gpu_fans: Option<FanMode>,
+    /// Commander Core LED count per port (0 = pump); `None`/missing = use the hub's detection.
+    pub led_ports: Vec<Option<u16>>,
     pub autostart: bool,
     /// Last GUI window position (screen coordinates).
     pub gui_pos: Option<(f32, f32)>,
@@ -102,6 +104,7 @@ impl Default for Config {
                 points: vec![(28.0, 40), (32.0, 50), (36.0, 70), (40.0, 90), (43.0, 100)],
             },
             gpu_fans: None,
+            led_ports: Vec::new(),
             autostart: false,
             gui_pos: None,
         }

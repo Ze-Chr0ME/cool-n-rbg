@@ -4,7 +4,7 @@ use coolrgb_core::devices::commander_core::CommanderCore;
 
 fn main() {
     let api = hidapi::HidApi::new().unwrap();
-    let cc = CommanderCore::open(&api).unwrap().unwrap();
+    let cc = CommanderCore::open(&api, &[]).unwrap().unwrap();
     match std::env::args().nth(1).as_deref() {
         Some("set") => {
             cc.set_duty(&[70, 45, 45, 45, 45, 45, 45]).unwrap();

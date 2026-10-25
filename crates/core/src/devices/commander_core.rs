@@ -21,8 +21,11 @@ pub struct CommanderCore {
     /// Packet size without the report id byte (64 or 96).
     packet: usize,
     pub firmware: String,
-    /// LED count per port (0 = pump), 0 when nothing is connected.
+    /// LED count per port (0 = pump) actually driven, 0 when nothing is connected.
     pub port_leds: [u16; CHANNELS],
+    /// What the hub itself reported per port. Its detection is unreliable on some ports (seen: an
+    /// LL120 read as 40 LEDs, later as 21, later as "unknown").
+    pub detected: [u16; CHANNELS],
     /// Fan/pump present per channel.
     pub connected: [bool; CHANNELS],
     last_color_write: Instant,
@@ -30,8 +33,24 @@ pub struct CommanderCore {
     pub restore_on_drop: bool,
 }
 
+/// Hub device code for an LED count; `Some(0)` = nothing connected, `None` = no such Corsair device.
+pub fn port_code(leds: u16) -> Option<u8> {
+    match leds {
+        0 => Some(0),
+        4 => Some(0x03),
+        8 => Some(0x05),
+        10 => Some(0x01),
+        12 => Some(0x04),
+        16 => Some(0x02),
+        21 | 24 | 29 => Some(0x08),
+        34 => Some(0x06),
+        _ => None,
+    }
+}
+
 impl CommanderCore {
-    pub fn open(api: &HidApi) -> Option<Result<CommanderCore, String>> {
+    /// `overrides[port]`: `Some(n)` forces the LED count of that port, `None` uses the hub's detection.
+    pub fn open(api: &HidApi, overrides: &[Option<u16>]) -> Option<Result<CommanderCore, String>> {
         let info = api.device_list().find(|d| {
             d.vendor_id() == 0x1b1c && PIDS.contains(&d.product_id()) && d.interface_number() == 0
         })?;
@@ -42,11 +61,12 @@ impl CommanderCore {
                 packet: if pid == 0x0c1c { 96 } else { 64 },
                 firmware: String::new(),
                 port_leds: [0; CHANNELS],
+                detected: [0; CHANNELS],
                 connected: [false; CHANNELS],
                 last_color_write: Instant::now() - Duration::from_secs(60),
                 restore_on_drop: true,
             };
-            cc.init()?;
+            cc.init(overrides)?;
             Ok(cc)
         }))
     }
@@ -95,31 +115,55 @@ impl CommanderCore {
         Ok(())
     }
 
-    fn init(&mut self) -> Result<(), String> {
+    fn init(&mut self, overrides: &[Option<u16>]) -> Result<(), String> {
         let fw = self.xfer(&[0x02, 0x13], &[])?;
         self.firmware = format!("{}.{}.{}", fw[3], fw[4], u16::from_le_bytes([fw[5], fw[6]]));
         self.xfer(&CMD_SOFTWARE, &[])?;
 
         let leds = self.read_ep(EP_LEDS)?;
-        let count = (leds[5] as usize).min(CHANNELS);
-        for i in 0..count {
+        for i in 0..(leds[5] as usize).min(CHANNELS) {
             let o = 6 + i * 4;
             if leds[o] == 2 {
-                self.port_leds[i] = u16::from_le_bytes([leds[o + 2], leds[o + 3]]);
+                self.detected[i] = u16::from_le_bytes([leds[o + 2], leds[o + 3]]);
             }
+        }
+        for i in 0..CHANNELS {
+            self.port_leds[i] = match overrides.get(i).copied().flatten() {
+                Some(n) => n.min(34),
+                // A count no Corsair device has is a misdetection; LL fans (16) are the usual cause.
+                None if port_code(self.detected[i]).is_none() => 16,
+                None => self.detected[i],
+            };
         }
         let fans = self.read_ep(EP_FANS)?;
         for i in 0..(fans[5] as usize).min(CHANNELS) {
             self.connected[i] = matches!(fans[6 + i], 0x07 | 0x02);
         }
+        self.write_port_table()
+    }
 
+    /// Tell the hub what is on each LED port, as iCUE and OpenLinkHub do after entering software mode.
+    /// Without it the hub only drives the ports it set up itself (here: the AIO, not the LL120s).
+    fn write_port_table(&mut self) -> Result<(), String> {
+        for port in 0..CHANNELS as u8 {
+            self.xfer(&[0x14, port, 0x01], &[])?;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+        let mut table = vec![0x0d, 0x00, 0x07];
+        for &n in &self.port_leds {
+            match port_code(n) {
+                Some(0) | None => table.push(0x00),
+                Some(c) => table.extend_from_slice(&[0x01, c]),
+            }
+        }
+        self.write_ep(0x1e, &[], &table, false)?;
         // Keep the color endpoint open on slot 0 for the session.
         self.xfer(&[0x05, 0x01, 0x01], &[EP_COLOR])?;
         self.xfer(&[0x0d, 0x00], &[EP_COLOR])?;
         Ok(())
     }
 
-    /// The hub keeps the LED port layout configured by iCUE; colors are sent for every LED, ports in order.
+    /// Colors are sent for every LED, ports in order, no padding.
     pub fn led_count(&self) -> usize {
         self.port_leds.iter().map(|&n| n as usize).sum()
     }

@@ -77,3 +77,10 @@ each byte = (c | c<<4) where c = value >> 4. With invert boards the value writte
 - Set speed works: fans 60% -> ~1450 RPM (8-LED fans) / ~1070 (16-LED fans); pump 80% -> ~2400 RPM.
 - Crash safety: after the last command the hub stays in software mode briefly, then by 75 s it is back on
   its stored hardware profile by itself (fans ~620 RPM, pump ~2320). Daemon must keep-alive every few seconds.
+
+### LED port table (required for all ports to light)
+After software mode send `14 <port> 01` for ports 0..6, wait 500 ms, then write endpoint `1e` (no data type)
+with `0d 00 07` + per port `01 <code>` or `00` (codes: 4 LEDs 03, 8 LEDs 05, strip 01, HD 04, LL 02, pump 08,
+QL 06). Without it the hub only drove the AIO ports; the 3 LL120s on ports 4-6 stayed dark.
+The hub's LED-count detection is unreliable: port 6 (an LL120) read 40, 21, "status 03", 35 across reads.
+Counts that match no Corsair device are driven as LL (16); the GUI can force a type per port (`led_ports`).

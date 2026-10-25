@@ -40,6 +40,9 @@ pub struct Status {
     pub gpu_fan_rpm: Vec<u32>,
     pub gpu_fan_percent: Vec<u32>,
     pub gpu_fan_manual: bool,
+    /// Commander Core LED counts per port as the hub detected them and as actually driven.
+    pub cc_ports_detected: Vec<u16>,
+    pub cc_ports: Vec<u16>,
     pub messages: Vec<String>,
     pub working_set_kb: u64,
 }
