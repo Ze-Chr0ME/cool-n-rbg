@@ -1,5 +1,6 @@
 //! Daemon <-> GUI protocol: one JSON object per line over the named pipe `\\.\pipe\coolrgb`.
 use crate::config::Config;
+use crate::devices::corsair::{MouseChange, MouseState};
 use crate::devices::evision::{KeyboardChange, KeyboardState};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
@@ -18,6 +19,8 @@ pub enum Request {
     Handover,
     /// Change a setting stored on a keyboard; the new state shows up in `Status::keyboards`.
     Keyboard { id: String, change: KeyboardChange },
+    /// Change a setting stored on a mouse; the new state shows up in `Status::mice`.
+    Mouse { id: String, change: MouseChange },
 }
 
 /// Device category, used to group the Devices page.
@@ -76,6 +79,7 @@ pub struct Status {
     pub cc_ports_detected: Vec<u16>,
     pub cc_ports: Vec<u16>,
     pub keyboards: Vec<KeyboardState>,
+    pub mice: Vec<MouseState>,
     pub messages: Vec<String>,
     pub working_set_kb: u64,
 }

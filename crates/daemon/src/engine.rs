@@ -9,6 +9,7 @@ use coolrgb_core::config::{Config, FanMode, MIN_FAN_PERCENT, MIN_GPU_FAN_PERCENT
 use coolrgb_core::devices::corsair::{bragi::CorsairV2, commander_core::CommanderCore, dram::{self, CorsairDram}};
 #[cfg(feature = "evision")]
 use coolrgb_core::devices::evision::v2::{self as evision_v2, EvisionV2};
+use coolrgb_core::devices::corsair::{MouseChange, MouseState};
 use coolrgb_core::devices::evision::{KeyboardChange, KeyboardState};
 #[cfg(feature = "msi")]
 use coolrgb_core::devices::msi::superio_rgb::MsiRgb;
@@ -19,7 +20,7 @@ use coolrgb_core::ipc::{DeviceInfo, DeviceKind, Status};
 use coolrgb_core::nvapi::NvGpu;
 use coolrgb_core::sensors::{board_name, CpuTemp};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -29,6 +30,9 @@ const FRAME: Duration = Duration::from_millis(50);
 const DRAM_FRAME: Duration = Duration::from_millis(100);
 const IDLE: Duration = Duration::from_millis(250);
 const KEEPALIVE: Duration = Duration::from_secs(4);
+/// Rescans after a USB device dropped out, until it is back.
+const LOST_RESCAN: Duration = Duration::from_secs(3);
+const LOST_RETRIES: u8 = 5;
 const LIQUID_CRITICAL: f32 = 50.0;
 const CPU_CRITICAL: f32 = 95.0;
 const GPU_CRITICAL: f32 = 85.0;
@@ -44,6 +48,11 @@ pub struct Shared {
     pub handover: AtomicBool,
     /// Keyboard setting changes waiting for the peripherals thread: (device id, change).
     pub keyboard_jobs: Mutex<Vec<(String, KeyboardChange)>>,
+    /// Mouse setting changes from the control panel and the DPI button: (device id, change).
+    pub mouse_jobs: Mutex<Vec<(String, MouseChange)>>,
+    /// Wakes the peripherals thread early (new jobs).
+    woken: Mutex<bool>,
+    wake: Condvar,
 }
 
 impl Shared {
@@ -57,6 +66,9 @@ impl Shared {
             start: Instant::now(),
             handover: AtomicBool::new(false),
             keyboard_jobs: Mutex::new(Vec::new()),
+            mouse_jobs: Mutex::new(Vec::new()),
+            woken: Mutex::new(false),
+            wake: Condvar::new(),
         })
     }
 
@@ -99,6 +111,26 @@ impl Shared {
             }
             std::thread::sleep((end - now).min(Duration::from_millis(100)));
         }
+    }
+
+    /// Wake the peripherals thread from `nap_wakeable` to handle new jobs.
+    pub fn wake(&self) {
+        *self.woken.lock().unwrap() = true;
+        self.wake.notify_all();
+    }
+
+    /// Like `nap`, but returns early on `wake`.
+    fn nap_wakeable(&self, d: Duration) {
+        let end = Instant::now() + d;
+        let mut woken = self.woken.lock().unwrap();
+        while !*woken && !self.stopped() {
+            let now = Instant::now();
+            if now >= end {
+                break;
+            }
+            woken = self.wake.wait_timeout(woken, (end - now).min(Duration::from_millis(100))).unwrap().0;
+        }
+        *woken = false;
     }
 }
 
@@ -641,23 +673,87 @@ fn set_keyboard_state(sh: &Shared, state: KeyboardState) {
     st.keyboards.push(state);
 }
 
+#[cfg(feature = "corsair")]
+fn set_mouse_state(sh: &Shared, state: MouseState) {
+    let mut st = sh.status.lock().unwrap();
+    st.mice.retain(|m| m.id != state.id);
+    st.mice.push(state);
+}
+
+/// Mouse button bit of the DPI button on the Bragi event interface.
+#[cfg(feature = "corsair")]
+const DPI_BUTTON: u8 = 0x08;
+/// How often mouse state (battery) is read again.
+#[cfg(feature = "corsair")]
+const MOUSE_POLL: Duration = Duration::from_secs(60);
+
+/// Ends its mouse's listener thread when dropped.
+#[cfg(feature = "corsair")]
+struct Listener(Arc<AtomicBool>);
+
+#[cfg(feature = "corsair")]
+impl Drop for Listener {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Relaxed);
+    }
+}
+
+/// In software mode the mouse leaves the DPI button to the host: turn presses into `NextStage` jobs.
+#[cfg(feature = "corsair")]
+fn listen_mouse(sh: &Arc<Shared>, id: &str, ev: hidapi::HidDevice) -> Listener {
+    let alive = Arc::new(AtomicBool::new(true));
+    let (sh, id, run) = (sh.clone(), id.to_string(), alive.clone());
+    let _ = std::thread::Builder::new().name("mouse buttons".into()).stack_size(64 * 1024).spawn(move || {
+        let mut held = 0u8;
+        let mut b = [0u8; 64];
+        while run.load(Ordering::Relaxed) && !sh.stopped() {
+            match ev.read_timeout(&mut b, 500) {
+                Ok(n) if n >= 3 && b[1] == 0x02 => {
+                    if b[2] & !held & DPI_BUTTON != 0 {
+                        sh.mouse_jobs.lock().unwrap().push((id.clone(), MouseChange::NextStage));
+                        sh.wake();
+                    }
+                    held = b[2];
+                }
+                Ok(_) => {}
+                // Unplugged; the peripherals thread notices on its next write.
+                Err(_) => return,
+            }
+        }
+    });
+    Listener(alive)
+}
+
 #[cfg(any(feature = "corsair", feature = "evision"))]
 fn peripherals_thread(sh: Arc<Shared>) {
     let Ok(mut api) = hidapi::HidApi::new() else { return };
     let mut devs: Vec<(String, Peripheral, Instant)> = Vec::new();
+    #[cfg(feature = "corsair")]
+    let mut listeners: Vec<Listener> = Vec::new();
+    #[cfg(feature = "corsair")]
+    let mut next_mouse_poll = Instant::now() + MOUSE_POLL;
     let mut next_scan = Instant::now();
+    // A device dropped out (unplugged, or re-enumerated after a polling rate change): scan again soon,
+    // a few times, until as many devices as before are open: (count before, scans left).
+    let mut lost: Option<(usize, u8)> = None;
     let mut seen_rescan = 0;
     let mut gen = 0;
     let mut cfg = Config::default();
     let mut buf = Vec::new();
     while !sh.stopped() {
         let rescan = sh.rescan_gen.load(Ordering::Relaxed);
-        if rescan != seen_rescan || (devs.is_empty() && Instant::now() >= next_scan) {
+        if rescan != seen_rescan || ((devs.is_empty() || lost.is_some()) && Instant::now() >= next_scan) {
             seen_rescan = rescan;
             for (id, _, _) in devs.drain(..) {
                 sh.remove_device(&id);
             }
             sh.status.lock().unwrap().keyboards.clear();
+            #[cfg(feature = "corsair")]
+            {
+                listeners.clear();
+                sh.status.lock().unwrap().mice.clear();
+                sh.mouse_jobs.lock().unwrap().clear();
+            }
             let _ = api.refresh_devices();
             #[cfg(feature = "corsair")]
             for (i, r) in CorsairV2::open_all(&api).into_iter().enumerate() {
@@ -665,6 +761,12 @@ fn peripherals_thread(sh: Arc<Shared>) {
                 match r {
                     Ok(d) => {
                         sh.set_device(info(&id, d.name, d.kind, d.leds, true, "USB"));
+                        if d.kind == DeviceKind::Mouse {
+                            set_mouse_state(&sh, d.mouse_state(&id));
+                            if let Some(ev) = d.open_events(&api) {
+                                listeners.push(listen_mouse(&sh, &id, ev));
+                            }
+                        }
                         devs.push((id, Peripheral::Corsair(d), Instant::now() - KEEPALIVE));
                     }
                     Err(e) => sh.set_device(info(&id, "Corsair peripheral", DeviceKind::Other, 0, false, e)),
@@ -683,6 +785,10 @@ fn peripherals_thread(sh: Arc<Shared>) {
                 }
             }
             next_scan = Instant::now() + Duration::from_secs(15);
+            lost = lost.filter(|&(before, left)| devs.len() < before && left > 1).map(|(before, left)| (before, left - 1));
+            if lost.is_some() {
+                next_scan = Instant::now() + LOST_RESCAN;
+            }
             gen = 0;
         }
         let frame_start = Instant::now();
@@ -713,8 +819,41 @@ fn peripherals_thread(sh: Arc<Shared>) {
                 set_keyboard_state(&sh, state);
             }
         }
-        let mut wait = IDLE;
         let mut failed = None;
+        #[cfg(feature = "corsair")]
+        {
+            let poll = Instant::now() >= next_mouse_poll;
+            if poll {
+                next_mouse_poll = Instant::now() + MOUSE_POLL;
+            }
+            let jobs = std::mem::take(&mut *sh.mouse_jobs.lock().unwrap());
+            for (i, (id, d, _)) in devs.iter_mut().enumerate() {
+                let Peripheral::Corsair(m) = d else { continue };
+                if m.kind != DeviceKind::Mouse {
+                    continue;
+                }
+                let mut error = None;
+                let mut touched = poll;
+                for (_, change) in jobs.iter().filter(|(job_id, _)| job_id == id) {
+                    touched = true;
+                    if let Err(e) = m.apply(change) {
+                        log(&e);
+                        error = Some(e);
+                    }
+                }
+                if touched {
+                    let mut state = m.mouse_state(id);
+                    // A polling rate change makes the mouse reconnect; reopen it then.
+                    if let Some(e) = state.error.take() {
+                        failed = Some((i, e));
+                        continue;
+                    }
+                    state.error = error;
+                    set_mouse_state(&sh, state);
+                }
+            }
+        }
+        let mut wait = IDLE;
         for (i, (id, d, last)) in devs.iter_mut().enumerate() {
             // A keyboard set to its built-in effect is left alone, except to turn it dark with the master switch.
             #[cfg(feature = "evision")]
@@ -748,11 +887,15 @@ fn peripherals_thread(sh: Arc<Shared>) {
             wait = wait.min(d.keepalive().saturating_sub(last.elapsed()));
         }
         if let Some((i, e)) = failed {
+            lost = Some((devs.len(), LOST_RETRIES));
+            next_scan = Instant::now() + LOST_RESCAN;
             let (id, d, _) = devs.remove(i);
             sh.set_device(info(&id, d.name(), d.kind(), 0, false, e));
-            sh.status.lock().unwrap().keyboards.retain(|k| k.id != id);
+            let mut st = sh.status.lock().unwrap();
+            st.keyboards.retain(|k| k.id != id);
+            st.mice.retain(|m| m.id != id);
         }
-        sh.nap(wait.saturating_sub(frame_start.elapsed()));
+        sh.nap_wakeable(wait.saturating_sub(frame_start.elapsed()));
     }
     for (_, d, _) in devs.iter_mut() {
         d.set_restore(!sh.handover.load(Ordering::Relaxed));

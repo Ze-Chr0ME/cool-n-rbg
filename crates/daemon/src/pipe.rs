@@ -134,6 +134,12 @@ fn respond(sh: &Shared, req: &Request) -> Response {
         }
         Request::Keyboard { id, change } => {
             sh.keyboard_jobs.lock().unwrap().push((id.clone(), change.clone()));
+            sh.wake();
+            Response::Ok
+        }
+        Request::Mouse { id, change } => {
+            sh.mouse_jobs.lock().unwrap().push((id.clone(), change.clone()));
+            sh.wake();
             Response::Ok
         }
     }

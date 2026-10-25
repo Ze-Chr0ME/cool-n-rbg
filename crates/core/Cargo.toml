@@ -62,3 +62,11 @@ required-features = ["corsair"]
 [[example]]
 name = "probe"
 required-features = ["corsair"]
+
+[[example]]
+name = "bragi_props"
+required-features = ["corsair"]
+
+[[example]]
+name = "bragi_listen"
+required-features = ["corsair"]

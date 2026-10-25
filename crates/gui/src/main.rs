@@ -6,6 +6,7 @@ mod fan_curve;
 
 use coolrgb_core::config::{default_gpu_curve, port_key, presets, Config, FanMode, TempSource, MIN_FAN_PERCENT, MIN_GPU_FAN_PERCENT, MIN_PUMP_PERCENT};
 use coolrgb_core::effects::{Effect, Rgb};
+use coolrgb_core::devices::corsair::{MouseChange, MouseState, DPI_MAX, DPI_MIN, DPI_STEP, POLLING_HZ as MOUSE_POLLING_HZ, SLEEP_MINUTES};
 use coolrgb_core::devices::evision::{KeyboardChange, KeyboardState, OnboardLighting, DEBOUNCE_MS, MAX_BRIGHTNESS, MODES, POLLING_HZ, PROFILES, SLOWEST};
 use coolrgb_core::ipc::{call, DeviceInfo, DeviceKind, Request, Response, Status};
 use eframe::egui::{self, Color32, RichText};
@@ -23,6 +24,7 @@ struct Link {
 enum Msg {
     SetConfig(Config),
     Keyboard { id: String, change: KeyboardChange },
+    Mouse { id: String, change: MouseChange },
     Rescan,
     Quit,
 }
@@ -54,6 +56,10 @@ struct App {
     kb_edit: Option<(String, OnboardLighting)>,
     kb_dirty: bool,
     kb_last_edit: Instant,
+    /// Mouse DPI stages being edited (device id, values), sent like `kb_edit`.
+    mouse_edit: Option<(String, Vec<u16>)>,
+    mouse_dirty: bool,
+    mouse_last_edit: Instant,
 }
 
 /// Background I/O so the UI never blocks on the pipe.
@@ -74,6 +80,7 @@ fn worker(link: Arc<Mutex<Link>>, rx: Receiver<Msg>, ctx: egui::Context) {
                 Msg::Rescan => drop(call(&Request::Rescan)),
                 Msg::Quit => drop(call(&Request::Quit)),
                 Msg::Keyboard { id, change } => drop(call(&Request::Keyboard { id, change })),
+                Msg::Mouse { id, change } => drop(call(&Request::Mouse { id, change })),
             }
         }
         if let Some(c) = latest_cfg {
@@ -247,6 +254,9 @@ impl App {
             kb_edit: None,
             kb_dirty: false,
             kb_last_edit: Instant::now(),
+            mouse_edit: None,
+            mouse_dirty: false,
+            mouse_last_edit: Instant::now(),
         }
     }
 
@@ -470,6 +480,12 @@ impl App {
                     let _ = std::process::Command::new("control").arg("keyboard").spawn();
                 }
             }
+            DeviceKind::Mouse if !st.mice.is_empty() => {
+                for m in &st.mice {
+                    let name = devs.iter().find(|d| d.id == m.id).map_or(m.id.as_str(), |d| d.name.as_str());
+                    self.mouse_ui(ui, m, name);
+                }
+            }
             DeviceKind::Controller if !st.cc_ports.is_empty() => {
                 ui.heading("Commander Core LED ports");
                 ui.label(
@@ -610,6 +626,95 @@ impl App {
         let pending = self.kb_dirty || matches!(&self.kb_edit, Some((id, e)) if *id == kb.id && *e != stored);
         if pending {
             ui.label(RichText::new("Saving to the keyboard…").weak());
+        }
+    }
+
+    fn mouse_ui(&mut self, ui: &mut egui::Ui, m: &MouseState, name: &str) {
+        ui.heading(name);
+        if let Some(e) = &m.error {
+            ui.label(RichText::new(e).color(Color32::from_rgb(230, 90, 80)));
+        }
+        if let Some(b) = m.battery {
+            ui.label(format!("Battery {b} %"));
+        }
+        ui.add_space(8.0);
+        let send = |tx: &Sender<Msg>, change| drop(tx.send(Msg::Mouse { id: m.id.clone(), change }));
+        // Edits stay local until the user pauses, so dragging a slider doesn't rewrite the mouse's memory each frame.
+        let mut dpi = match &self.mouse_edit {
+            Some((id, d)) if *id == m.id => d.clone(),
+            _ => m.dpi_stages.clone(),
+        };
+        let before = dpi.clone();
+        ui.label(RichText::new("DPI stages").strong());
+        egui::Grid::new(("mouse-dpi", &m.id)).spacing([14.0, 6.0]).show(ui, |ui| {
+            for (i, d) in dpi.iter_mut().enumerate() {
+                let active = m.stage as usize == i;
+                if ui.selectable_label(active, format!("Stage {}", i + 1)).on_hover_text("Make this stage active").clicked() && !active {
+                    send(&self.tx, MouseChange::Stage { stage: i as u8 });
+                }
+                ui.add(egui::Slider::new(d, DPI_MIN..=DPI_MAX).step_by(DPI_STEP as f64).suffix(" DPI"));
+                ui.end_row();
+            }
+        });
+        if dpi != before {
+            self.mouse_edit = Some((m.id.clone(), dpi.clone()));
+            self.mouse_last_edit = Instant::now();
+            self.mouse_dirty = true;
+        }
+        let pending = self.mouse_dirty || matches!(&self.mouse_edit, Some((id, d)) if *id == m.id && *d != m.dpi_stages);
+        if pending {
+            ui.label(RichText::new("Saving to the mouse…").weak());
+        }
+        ui.label(RichText::new("The DPI button steps through the stages. They are saved on the mouse, so they also work when Cool'n RGB isn't running.").weak());
+        ui.add_space(8.0);
+        egui::Grid::new(("mouse-settings", &m.id)).spacing([14.0, 8.0]).show(ui, |ui| {
+            ui.label("USB polling rate");
+            ui.horizontal(|ui| {
+                for hz in MOUSE_POLLING_HZ {
+                    if ui.selectable_label(m.polling_hz == Some(hz), format!("{hz} Hz")).clicked() && m.polling_hz != Some(hz) {
+                        send(&self.tx, MouseChange::PollingRate { hz });
+                    }
+                }
+            });
+            ui.end_row();
+            ui.label("Angle snapping");
+            if let Some(on) = m.angle_snapping {
+                let mut v = on;
+                if ui.checkbox(&mut v, "Straighten nearly horizontal and vertical movement").changed() {
+                    send(&self.tx, MouseChange::AngleSnapping { on: v });
+                }
+            }
+            ui.end_row();
+            ui.label("Sleep after");
+            if let Some(cur) = m.sleep_minutes {
+                egui::ComboBox::from_id_salt(("mouse-sleep", &m.id)).selected_text(format!("{cur} min")).show_ui(ui, |ui| {
+                    for min in SLEEP_MINUTES {
+                        if ui.selectable_label(cur == min, format!("{min} min")).clicked() && cur != min {
+                            send(&self.tx, MouseChange::Sleep { minutes: min });
+                        }
+                    }
+                });
+            }
+            ui.end_row();
+        });
+        ui.label(RichText::new("Sleep applies when the mouse runs on battery.").weak());
+    }
+
+    /// Send a paused DPI edit; drop the local copy once the mouse reports it back.
+    fn flush_mouse_edit(&mut self, ctx: &egui::Context, st: Option<&Status>) {
+        let Some((id, dpi)) = self.mouse_edit.clone() else { return };
+        if self.mouse_dirty {
+            if self.mouse_last_edit.elapsed() >= Duration::from_millis(500) {
+                let _ = self.tx.send(Msg::Mouse { id, change: MouseChange::DpiStages { dpi } });
+                self.mouse_dirty = false;
+            } else {
+                ctx.request_repaint_after(Duration::from_millis(100));
+            }
+        } else {
+            let stored = st.and_then(|s| s.mice.iter().find(|m| m.id == id)).map(|m| &m.dpi_stages);
+            if stored == Some(&dpi) || self.mouse_last_edit.elapsed() >= Duration::from_secs(5) {
+                self.mouse_edit = None;
+            }
         }
     }
 
@@ -861,6 +966,7 @@ impl eframe::App for App {
         });
 
         self.flush_keyboard_edit(ui.ctx(), status.as_ref());
+        self.flush_mouse_edit(ui.ctx(), status.as_ref());
         if self.dirty {
             self.last_edit = Instant::now();
         }
