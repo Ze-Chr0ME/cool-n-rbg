@@ -52,6 +52,8 @@ To remove it, run `scripts\uninstall.ps1` (add `-KeepSettings` to keep `C:\Progr
   without losing your effects.
 - **Lighting**: brightness, plus one effect for all devices (Off, Static, Breathing, Rainbow, Wave).
   **Apply to** lets any device use its own effect.
+- **Fans → Presets**: Quiet, Balanced and Performance set the pump, case fans and GPU in one click.
+  Quiet stops the GPU fans below 55 °C.
 - **Fans**: a pump curve and a fans curve (all 6 fans), or fixed speeds. The temperature source can be
   liquid, CPU, GPU or the hottest of the three. Drag the points to change a curve. The orange line is the
   current temperature, and the red band is the area below the minimum speed.

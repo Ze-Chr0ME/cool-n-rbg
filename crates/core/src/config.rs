@@ -133,6 +133,44 @@ pub fn default_gpu_curve() -> FanMode {
     }
 }
 
+pub struct Preset {
+    pub name: &'static str,
+    pub pump: FanMode,
+    pub fans: FanMode,
+    pub gpu_fans: Option<FanMode>,
+}
+
+fn curve(source: TempSource, points: &[(f32, u8)]) -> FanMode {
+    FanMode::Curve { source, points: points.to_vec() }
+}
+
+/// Ready-made cooling profiles. Case fans and pump follow liquid temperature: it moves slowly, so
+/// fans don't rev up and down with every short CPU load spike.
+pub fn presets() -> Vec<Preset> {
+    use TempSource::{Gpu, Liquid};
+    vec![
+        Preset {
+            name: "Quiet",
+            pump: curve(Liquid, &[(32.0, 70), (38.0, 75), (42.0, 90), (45.0, 100)]),
+            fans: curve(Liquid, &[(31.0, 40), (35.0, 45), (38.0, 55), (41.0, 70), (44.0, 85), (47.0, 100)]),
+            // Fans off below 55 °C (card zero-RPM), gentle ramp, full speed only near the throttle point.
+            gpu_fans: Some(curve(Gpu, &[(55.0, 0), (56.0, 30), (65.0, 35), (72.0, 50), (78.0, 70), (83.0, 100)])),
+        },
+        Preset {
+            name: "Balanced",
+            pump: curve(Liquid, &[(30.0, 70), (36.0, 80), (40.0, 100)]),
+            fans: curve(Liquid, &[(28.0, 40), (32.0, 50), (36.0, 70), (40.0, 90), (43.0, 100)]),
+            gpu_fans: None,
+        },
+        Preset {
+            name: "Performance",
+            pump: curve(Liquid, &[(28.0, 85), (33.0, 100)]),
+            fans: curve(Liquid, &[(28.0, 50), (32.0, 65), (36.0, 85), (39.0, 100)]),
+            gpu_fans: Some(curve(Gpu, &[(40.0, 30), (60.0, 50), (70.0, 75), (78.0, 100)])),
+        },
+    ]
+}
+
 impl Config {
     pub fn load() -> Config {
         let parse = |p: PathBuf| std::fs::read(p).ok().and_then(|b| serde_json::from_slice::<Config>(&b).ok());

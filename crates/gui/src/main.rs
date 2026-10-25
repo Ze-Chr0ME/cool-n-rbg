@@ -4,7 +4,7 @@
 
 mod fan_curve;
 
-use coolrgb_core::config::{default_gpu_curve, Config, FanMode, TempSource, MIN_FAN_PERCENT, MIN_GPU_FAN_PERCENT, MIN_PUMP_PERCENT};
+use coolrgb_core::config::{default_gpu_curve, presets, Config, FanMode, TempSource, MIN_FAN_PERCENT, MIN_GPU_FAN_PERCENT, MIN_PUMP_PERCENT};
 use coolrgb_core::effects::{Effect, Rgb};
 use coolrgb_core::ipc::{call, Request, Response, Status};
 use eframe::egui::{self, Color32, RichText};
@@ -319,6 +319,20 @@ impl App {
         let cfg = self.cfg.as_mut().unwrap();
         let temps = (st.liquid, st.cpu, st.gpu);
         let mut changed = false;
+        ui.horizontal(|ui| {
+            ui.label("Presets");
+            for p in presets() {
+                let active = cfg.pump == p.pump && cfg.fans == p.fans && cfg.gpu_fans == p.gpu_fans;
+                if ui.selectable_label(active, p.name).clicked() && !active {
+                    cfg.pump = p.pump;
+                    cfg.fans = p.fans;
+                    cfg.gpu_fans = p.gpu_fans;
+                    changed = true;
+                }
+            }
+            ui.label(RichText::new("applies to pump, case fans and graphics card").weak());
+        });
+        ui.add_space(6.0);
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.heading("Pump");
             changed |= fan_mode_ui(ui, "pump", &mut cfg.pump, MIN_PUMP_PERCENT, temps);
