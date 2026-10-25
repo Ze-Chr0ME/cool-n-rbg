@@ -1,6 +1,6 @@
 //! Read-only check: open the EVision keyboard and print its slot count. `--color` also flashes
 //! red/green/blue for 1 s each, then hands the keyboard back to its stored effect.
-use coolrgb_core::devices::evision_v2::EvisionV2;
+use coolrgb_core::devices::evision::v2::EvisionV2;
 use coolrgb_core::effects::Rgb;
 use std::time::{Duration, Instant};
 

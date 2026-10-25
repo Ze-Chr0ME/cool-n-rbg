@@ -125,9 +125,12 @@ impl Drop for GlobalMutex {
     }
 }
 
-/// Module blobs are embedded so the binaries are self-contained.
+/// Module blobs are embedded so the binaries are self-contained. Only the ones the enabled drivers
+/// use are included.
 pub mod blobs {
+    #[cfg(feature = "smbus")]
     pub static SMBUS_PIIX4: &[u8] = include_bytes!("../../../vendor/pawnio/SmbusPIIX4.bin");
+    #[cfg(feature = "msi")]
     pub static LPC_IO: &[u8] = include_bytes!("../../../vendor/pawnio/LpcIO.bin");
     pub static AMD_FAMILY17: &[u8] = include_bytes!("../../../vendor/pawnio/AMDFamily17.bin");
 }

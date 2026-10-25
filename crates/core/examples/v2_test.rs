@@ -1,4 +1,4 @@
-use coolrgb_core::devices::corsair_v2::CorsairV2;
+use coolrgb_core::devices::corsair::bragi::CorsairV2;
 use coolrgb_core::effects::Rgb;
 
 fn main() {

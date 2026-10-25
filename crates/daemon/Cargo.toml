@@ -3,9 +3,16 @@ name = "coolrgbd"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = ["corsair", "evision", "msi"]
+# Drivers to build in; see coolrgb-core's features. A slim build: --no-default-features --features corsair
+corsair = ["coolrgb-core/corsair", "dep:hidapi"]
+evision = ["coolrgb-core/evision", "dep:hidapi"]
+msi = ["coolrgb-core/msi"]
+
 [dependencies]
-coolrgb-core = { path = "../core" }
-hidapi = { version = "2", default-features = false, features = ["windows-native"] }
+coolrgb-core = { path = "../core", default-features = false }
+hidapi = { version = "2", default-features = false, features = ["windows-native"], optional = true }
 serde_json = "1"
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",

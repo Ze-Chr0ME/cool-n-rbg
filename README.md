@@ -79,11 +79,30 @@ To remove it, run `scripts\uninstall.ps1` (add `-KeepSettings` to keep `C:\Progr
 ## Layout
 
 ```
-crates/core    devices (Commander Core, Corsair V2, DRAM, MSI-RGB), effects, config, IPC, PawnIO binding
+crates/core    device drivers, effects, config, IPC, PawnIO binding
 crates/daemon  coolrgbd.exe: tray icon, device threads, fan control, named pipe server
 crates/gui     coolrgb.exe: egui control panel
 vendor/pawnio  signed PawnIO modules (SmbusPIIX4, LpcIO, AMDFamily17), embedded in the binaries
 ```
+
+Drivers live in `crates/core/src/devices/`, one folder per manufacturer and one module per protocol.
+A protocol module lists the devices it supports in a VID/PID table.
+
+```
+corsair/    commander_core.rs, bragi.rs (V2 peripherals), dram.rs (Vengeance RGB Pro)
+evision/    v2.rs (keyboards); mod.rs holds the keyboard settings shared with the GUI
+msi/        superio_rgb.rs (MSI-RGB on Nuvoton Super-IO)
+transport/  smbus.rs (AMD PIIX4), used by any SMBus driver
+```
+
+Each manufacturer is a Cargo feature (`corsair`, `evision`, `msi`), all on by default. A disabled
+feature compiles none of that driver, and leaves out its PawnIO module. Example for a Corsair-only service:
+
+```
+cargo build --release -p coolrgbd --no-default-features --features corsair
+```
+
+The GUI only uses the shared types, so it never links device drivers.
 
 Developer examples, run with `cargo run --release -p coolrgb-core --example <name>`:
 

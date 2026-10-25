@@ -1,6 +1,6 @@
 //! Daemon <-> GUI protocol: one JSON object per line over the named pipe `\\.\pipe\coolrgb`.
 use crate::config::Config;
-use crate::devices::evision_v2::{KeyboardChange, KeyboardState};
+use crate::devices::evision::{KeyboardChange, KeyboardState};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
 

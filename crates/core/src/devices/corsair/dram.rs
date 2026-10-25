@@ -1,5 +1,5 @@
 //! Corsair Vengeance RGB Pro DDR4 lighting over SMBus (direct, volatile mode only).
-use super::smbus::{crc8, Smbus};
+use crate::devices::transport::smbus::{crc8, Smbus};
 use crate::effects::Rgb;
 use std::sync::Arc;
 

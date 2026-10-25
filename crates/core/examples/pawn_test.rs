@@ -1,5 +1,5 @@
 // PawnIO-backed devices: CPU temp, GPU temp, DRAM detection + color, MSI-RGB.
-use coolrgb_core::devices::{dram::CorsairDram, msi_rgb::MsiRgb, smbus::Smbus};
+use coolrgb_core::devices::{corsair::dram::CorsairDram, msi::superio_rgb::MsiRgb, transport::smbus::Smbus};
 use coolrgb_core::effects::Rgb;
 use coolrgb_core::nvapi::NvGpu;
 use coolrgb_core::sensors::{board_name, CpuTemp};

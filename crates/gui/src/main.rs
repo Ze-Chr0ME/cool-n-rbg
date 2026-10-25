@@ -6,7 +6,7 @@ mod fan_curve;
 
 use coolrgb_core::config::{default_gpu_curve, port_key, presets, Config, FanMode, TempSource, MIN_FAN_PERCENT, MIN_GPU_FAN_PERCENT, MIN_PUMP_PERCENT};
 use coolrgb_core::effects::{Effect, Rgb};
-use coolrgb_core::devices::evision_v2::{KeyboardChange, KeyboardState, OnboardLighting, DEBOUNCE_MS, MAX_BRIGHTNESS, MODES, POLLING_HZ, PROFILES, SLOWEST};
+use coolrgb_core::devices::evision::{KeyboardChange, KeyboardState, OnboardLighting, DEBOUNCE_MS, MAX_BRIGHTNESS, MODES, POLLING_HZ, PROFILES, SLOWEST};
 use coolrgb_core::ipc::{call, DeviceInfo, DeviceKind, Request, Response, Status};
 use eframe::egui::{self, Color32, RichText};
 use std::sync::mpsc::{self, Receiver, Sender};
