@@ -1,5 +1,7 @@
 //! Daemon <-> GUI protocol: one JSON object per line over the named pipe `\\.\pipe\coolrgb`.
 use crate::config::Config;
+use crate::devices::corsair::{MouseChange, MouseState};
+use crate::devices::evision::{KeyboardChange, KeyboardState};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
 
@@ -15,12 +17,45 @@ pub enum Request {
     Quit,
     /// Quit without handing devices back to their hardware lighting (a new daemon takes over right away).
     Handover,
+    /// Change a setting stored on a keyboard; the new state shows up in `Status::keyboards`.
+    Keyboard { id: String, change: KeyboardChange },
+    /// Change a setting stored on a mouse; the new state shows up in `Status::mice`.
+    Mouse { id: String, change: MouseChange },
+}
+
+/// Device category, used to group the Devices page.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceKind {
+    Keyboard,
+    Mouse,
+    /// Fan/LED hub.
+    Controller,
+    Memory,
+    Motherboard,
+    #[default]
+    Other,
+}
+
+impl DeviceKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            DeviceKind::Keyboard => "Keyboard",
+            DeviceKind::Mouse => "Mouse",
+            DeviceKind::Controller => "Controller",
+            DeviceKind::Memory => "Memory",
+            DeviceKind::Motherboard => "Motherboard",
+            DeviceKind::Other => "Other",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct DeviceInfo {
     pub id: String,
     pub name: String,
+    pub kind: DeviceKind,
     pub leds: usize,
     pub ok: bool,
     pub detail: String,
@@ -43,6 +78,8 @@ pub struct Status {
     /// Commander Core LED counts per port as the hub detected them and as actually driven.
     pub cc_ports_detected: Vec<u16>,
     pub cc_ports: Vec<u16>,
+    pub keyboards: Vec<KeyboardState>,
+    pub mice: Vec<MouseState>,
     pub messages: Vec<String>,
     pub working_set_kb: u64,
 }

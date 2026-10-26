@@ -1,6 +1,6 @@
 // Diagnostic: light each Commander Core LED port a distinct color for N seconds.
 // `cc_ports [seconds]`.
-use coolrgb_core::devices::commander_core::CommanderCore;
+use coolrgb_core::devices::corsair::commander_core::CommanderCore;
 use coolrgb_core::effects::Rgb;
 
 const COLORS: [Rgb; 7] = [

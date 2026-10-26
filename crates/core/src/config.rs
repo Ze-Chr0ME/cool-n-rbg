@@ -1,6 +1,6 @@
 use crate::effects::Effect;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 /// Hard floors agreed for this build. The daemon never sends a lower duty.
@@ -77,6 +77,8 @@ pub struct Config {
     pub effect: Effect,
     /// Device id -> effect override.
     pub per_device: BTreeMap<String, Effect>,
+    /// Devices left to run the effect stored on them (e.g. a keyboard's built-in effect) while lights are on.
+    pub onboard_lighting: BTreeSet<String>,
     pub pump: FanMode,
     pub fans: FanMode,
     /// `None` = the graphics card's own automatic curve (including zero-RPM).
@@ -95,6 +97,7 @@ impl Default for Config {
             brightness: 100,
             effect: Effect::default(),
             per_device: BTreeMap::new(),
+            onboard_lighting: BTreeSet::new(),
             pump: FanMode::Curve {
                 source: TempSource::Liquid,
                 points: vec![(30.0, 70), (36.0, 80), (40.0, 100)],
@@ -199,6 +202,16 @@ impl Config {
     pub fn effect_for(&self, device_id: &str) -> &Effect {
         self.per_device.get(device_id).unwrap_or(&self.effect)
     }
+
+    /// Effect of one port of a multi-port device: the port's own, else the device's, else the global one.
+    pub fn effect_for_port(&self, device_id: &str, port: usize) -> &Effect {
+        self.per_device.get(&port_key(device_id, port)).unwrap_or_else(|| self.effect_for(device_id))
+    }
+}
+
+/// `per_device` key for one port of a multi-port device, e.g. `commander_core:3`.
+pub fn port_key(device_id: &str, port: usize) -> String {
+    format!("{device_id}:{port}")
 }
 
 #[cfg(test)]
@@ -211,6 +224,17 @@ mod tests {
         assert_eq!(interpolate(&p, 20.0), 40);
         assert_eq!(interpolate(&p, 35.0), 70);
         assert_eq!(interpolate(&p, 50.0), 100);
+    }
+
+    #[test]
+    fn port_effect_falls_back_to_device_then_global() {
+        let mut c = Config::default();
+        assert_eq!(c.effect_for_port("hub", 2), &c.effect);
+        c.per_device.insert("hub".into(), Effect::Off);
+        assert_eq!(c.effect_for_port("hub", 2), &Effect::Off);
+        c.per_device.insert(port_key("hub", 2), Effect::Rainbow { period_s: 3.0 });
+        assert_eq!(c.effect_for_port("hub", 2), &Effect::Rainbow { period_s: 3.0 });
+        assert_eq!(c.effect_for_port("hub", 1), &Effect::Off);
     }
 
     #[test]

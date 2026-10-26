@@ -46,6 +46,78 @@ Command interface: usage page FF42, usage 1. `GET 0x12` (= `02 12`) returns PID 
 SET = `01`, GET = `02`, mode register `03`: value `01` hardware, `02` software (OpenRGB SetRenderMode).
 Start tx `0d <opt> <light_ctrl 0x01|0x22>`, block write `06 00 [len LE]` data at offset 8, more `07` data at offset 4, stop `05 01 <opt>`.
 
+### Harpoon device-control properties (non-RGB)
+
+GET `02 <id>` replies `[1]=02 [2]=status (0 ok) [3..]=value LE`; SET is `01 <id> 00 <value LE>`, accepted
+only in software mode (hardware mode answers status 03).
+Values read from this mouse by `examples/bragi_props.rs` (read-only scan, fw 5.0.129, daemon in
+software mode), 2026-10-25. Names from OpenLinkHub `src/devices/harpoonWU/harpoonWU.go`
+unless marked as a guess.
+
+| id | value here | meaning |
+|---|---|---|
+| `01` | 4 | polling rate: 1=125 Hz, 2=250, 3=500, 4=1000; a change makes the mouse reconnect on USB (active stage resets to 0) |
+| `02` | 1000 | LED brightness 0..1000 |
+| `03` | 2 | mode: 1 hardware, 2 software |
+| `07` | 0 | angle snapping 0/1 |
+| `0e` | 900000 | sleep timeout ms (OpenLinkHub writes `0e` and `37` together, after `01 0d 00 01`) |
+| `37` | 300000 | sleep timeout ms, second register |
+| `0f` | 1000 | battery level x10 (%) |
+| `10` | 3 | battery status (guess: 3 = full) |
+| `13` | 05 00 81 00 | firmware 5.0.129 (`[0].[1].[2..4] LE`) |
+| `18..1c` | 10000, 1000, 1400, 3000, 5000 | hardware DPI stage 0..4 (verified: hardware mode switches `20` to the active stage value) |
+| `1e` | 1 | active hardware DPI stage; writable in software mode |
+| `1f` | 1 | unknown, DPI-related (enabled stages?) |
+| `20` | 1000 | current DPI, X and Y: 200..10000 in steps of 200, anything else answers status 01 |
+| `2f..33` | blue, white, green, purple, orange | DPI stage 0..4 indicator colors, value bytes R, G, B. In software mode the host draws the DPI LED (LED 0; LED 1 = logo) itself |
+| `b0` | 0 | button response optimization 0/1 |
+
+Not on this mouse (GET fails): `21`/`22` (separate DPI X/Y on other Bragi mice), `1d`.
+Unknown but readable: `04 09 0a 0b 0d 17 35 38 39 40 48 5f 6f..74 96`.
+
+In software mode the firmware ignores the DPI button (verified); interface 2 (usage page FF42,
+usage 2) sends `[1]=02 [2]=held button bits` on every press and release (left `01`, right `02`, middle `04`,
+DPI `08`, side `10`/`20`) and the host steps the stage: write `1e`, then `20`.
+Button remap: open `0d 01 02`, write `06 01 [len LE 2 bytes, 0, 0]` + one byte per
+button (1 = firmware default, 0 = host handles it), close `05 01 01`.
+Keep-alive: OpenLinkHub sends `12` every 20 s.
+
+## EVision V2 keyboards: DesignedByGG Ironclad V3 320F:511E (interface 1, usage page FF1C usage 92)
+
+Source: OpenRGB `EVisionV2KeyboardController` (lists the Ironclad V1, 320F:5041). The stock app
+`ICL03.exe` hardcodes 320F/511E and talks to the same collection with `HidD_SetOutputReport`.
+
+Every request and reply is one 64-byte report:
+`[0]=04 (report id) [1..3]=checksum LE (sum of bytes 3..63) [3]=cmd [4]=size [5..7]=offset LE [7]=status [8..]=data (max 56)`.
+The reply echoes bytes 1..7; `[7]` non-zero = error.
+
+| cmd | use |
+|---|---|
+| `03` read capabilities, size 7 | `[0..2]=AA 55`, `[5]`=color slots (126 here = 21 columns x 6 rows) |
+| `12` send dynamic colors | RGB per slot, written at byte offset `slot*3`, chunked by 56 |
+| `13` end dynamic colors | keyboard returns to its stored effect |
+
+| `01` / `02` begin / end configure | wrap every `06` write |
+| `05` read config, `06` write config | stored settings, offset = config address |
+
+Capabilities (cmd `03`, 56 bytes read on this keyboard): `[5]`=slots, `[21..23]`=VID LE, `[31..]`=supported
+built-in effect codes, zero-terminated (`01..0f 11 10 12 14`).
+
+Config memory: `0x00` = active profile (0..2). Profile `p` at `1 + p*0x40`: `+0` effect, `+1` brightness
+0..4, `+2` speed 0 (fast)..5, `+3` direction (0 = counter-clockwise, matches the stock app), `+4` random
+colors (non-zero), `+5..8` RGB; we rewrite the first 18 bytes and keep `+8..18`. `+0x15` USB polling
+rate (0..3 = 1000/500/250/125 Hz), `+0x18` debounce (0..3 = 5/10/15/20 ms). Key map from `0xC0`,
+3 bytes per key (`20 00 <HID usage>`), repeated per profile.
+
+Polling and debounce were captured passively (`examples/evision_listen.rs`) while clicking each option in
+ICL03 in a known order, 2026-10-25. ICL03 saves by rewriting config `0x00..0x46` inside begin/end
+configure, and sometimes sends `13` (end dynamic colors), which drops our direct mode; the service
+re-sends its whole frame every second to take it back.
+
+Slot = `column*6 + row`; slots without a key are ignored. Direct colors revert unless refreshed about
+every 200 ms: we re-send slot 0 (3 bytes) every 150 ms. Verified 2026-10-25: capabilities, color writes
+and refresh all acknowledged.
+
 ## PawnIO (driver installed at C:\Program Files\PawnIO, modules in vendor\pawnio)
 
 `PawnIOLib.dll`: `pawnio_open(&h)`, `pawnio_load(h, blob, len)`, `pawnio_execute(h, "ioctl_name", in u64[], n, out u64[], n, &ret)`.

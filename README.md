@@ -19,11 +19,12 @@ panel is a separate program that you open from the tray. Closing it gives all of
 
 | Device | Lighting | Other |
 |---|---|---|
-| Corsair iCUE Commander Core (AIO pump + 6 fans, 125 LEDs) | yes | pump/fan speed, RPM, liquid temperature |
+| Corsair iCUE Commander Core (AIO pump + 6 fans, 125 LEDs) | yes, one effect per LED port or for the whole hub | pump/fan speed, RPM, liquid temperature |
 | Corsair Vengeance RGB Pro DDR4 x2 (SMBus 0x58, 0x5A) | yes | — |
 | MSI B450 TOMAHAWK onboard RGB (MSI-RGB Super-IO) | yes (single zone, 4-bit color) | — |
-| Corsair Harpoon RGB Wireless (USB cable) | yes | — |
-| Corsair K57 RGB Wireless (Slipstream dongle) | not yet: the keyboard did not answer during testing (asleep) | — |
+| Corsair Harpoon RGB Wireless (USB cable) | yes | 5 DPI stages + DPI button, polling rate, angle snapping, sleep timer, battery |
+| DesignedByGG Ironclad V3 (EVision 320F:511E) | yes (effects sweep across key columns) | — |
+| Corsair K57 RGB Wireless (Slipstream dongle) | no (retired, not planned) | — |
 | CPU (Ryzen Tctl), NVIDIA GPU | — | temperatures for fan curves |
 
 The protocols come from OpenRGB, OpenLinkHub and liquidctl; see [docs/PROTOCOLS.md](docs/PROTOCOLS.md).
@@ -78,11 +79,30 @@ To remove it, run `scripts\uninstall.ps1` (add `-KeepSettings` to keep `C:\Progr
 ## Layout
 
 ```
-crates/core    devices (Commander Core, Corsair V2, DRAM, MSI-RGB), effects, config, IPC, PawnIO binding
+crates/core    device drivers, effects, config, IPC, PawnIO binding
 crates/daemon  coolrgbd.exe: tray icon, device threads, fan control, named pipe server
 crates/gui     coolrgb.exe: egui control panel
 vendor/pawnio  signed PawnIO modules (SmbusPIIX4, LpcIO, AMDFamily17), embedded in the binaries
 ```
+
+Drivers live in `crates/core/src/devices/`, one folder per manufacturer and one module per protocol.
+A protocol module lists the devices it supports in a VID/PID table.
+
+```
+corsair/    commander_core.rs, bragi.rs (V2 peripherals), dram.rs (Vengeance RGB Pro)
+evision/    v2.rs (keyboards); mod.rs holds the keyboard settings shared with the GUI
+msi/        superio_rgb.rs (MSI-RGB on Nuvoton Super-IO)
+transport/  smbus.rs (AMD PIIX4), used by any SMBus driver
+```
+
+Each manufacturer is a Cargo feature (`corsair`, `evision`, `msi`), all on by default. A disabled
+feature compiles none of that driver, and leaves out its PawnIO module. Example for a Corsair-only service:
+
+```
+cargo build --release -p coolrgbd --no-default-features --features corsair
+```
+
+The GUI only uses the shared types, so it never links device drivers.
 
 Developer examples, run with `cargo run --release -p coolrgb-core --example <name>`:
 

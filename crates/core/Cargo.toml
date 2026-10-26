@@ -3,8 +3,17 @@ name = "coolrgb-core"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = ["corsair", "evision", "msi"]
+# One feature per manufacturer; a disabled one compiles none of its driver code.
+corsair = ["dep:hidapi", "smbus"]
+evision = ["dep:hidapi"]
+msi = []
+# AMD PIIX4 SMBus, pulled in by the drivers that use it.
+smbus = []
+
 [dependencies]
-hidapi = { version = "2", default-features = false, features = ["windows-native"] }
+hidapi = { version = "2", default-features = false, features = ["windows-native"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 windows-sys = { version = "0.59", features = [
@@ -17,3 +26,47 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Registry",
     "Win32_System_Threading",
 ] }
+
+[[example]]
+name = "cc_crash"
+required-features = ["corsair"]
+
+[[example]]
+name = "cc_ports"
+required-features = ["corsair"]
+
+[[example]]
+name = "cc_test"
+required-features = ["corsair"]
+
+[[example]]
+name = "v2_test"
+required-features = ["corsair"]
+
+[[example]]
+name = "pawn_test"
+required-features = ["corsair", "msi"]
+
+[[example]]
+name = "evision_probe"
+required-features = ["evision"]
+
+[[example]]
+name = "evision_listen"
+required-features = ["evision"]
+
+[[example]]
+name = "k57_probe"
+required-features = ["corsair"]
+
+[[example]]
+name = "probe"
+required-features = ["corsair"]
+
+[[example]]
+name = "bragi_props"
+required-features = ["corsair"]
+
+[[example]]
+name = "bragi_listen"
+required-features = ["corsair"]

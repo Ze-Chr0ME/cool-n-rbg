@@ -1,5 +1,5 @@
 // Commander Core live test: colors, then fans at floor-safe duty, then back to hardware mode.
-use coolrgb_core::devices::commander_core::CommanderCore;
+use coolrgb_core::devices::corsair::commander_core::CommanderCore;
 use coolrgb_core::effects::{Effect, Rgb};
 use std::time::{Duration, Instant};
 

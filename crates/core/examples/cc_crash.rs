@@ -1,6 +1,6 @@
 // Crash-safety check. `cc_crash set` sets fans to 45% then exits without restoring hardware mode.
 // `cc_crash read` reads RPM right after re-entering software mode (before any speed command).
-use coolrgb_core::devices::commander_core::CommanderCore;
+use coolrgb_core::devices::corsair::commander_core::CommanderCore;
 
 fn main() {
     let api = hidapi::HidApi::new().unwrap();
