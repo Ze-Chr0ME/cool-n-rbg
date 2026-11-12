@@ -1,112 +1,123 @@
 # Cool'n RGB
 
-A lightweight replacement for SignalRGB/iCUE on this PC: RGB lighting and fan/pump control, written in Rust.
+RGB lighting, fan curves, and peripheral settings in a small Windows app, written in Rust.
 
-| | Memory (private) | CPU |
-|---|---|---|
-| Background service `coolrgbd.exe`, static color | **~5.8 MB** | ~0 % |
-| Background service, animated effect | ~5.8 MB | USB devices ~0 %; RAM sticks ~7 % of one core (estimate, see below) |
-| Control panel `coolrgb.exe` (only while open) | ~110 MB | — |
-| SignalRGB (for comparison) | 410–840 MB | — |
+Built to replace SignalRGB and iCUE on my PC. It controls the Commander Core, RAM, motherboard lighting, keyboard, and mouse from one panel. Hardware support is specific to the devices below; this isn't a general-purpose RGB controller yet.
 
-SMBus writes to the RAM busy-wait inside the PawnIO driver. At 20 fps they measured 13.5 % of one core,
-so RAM animates at 10 fps and skips frames that didn't change. Static colors cost nothing.
+![Lighting panel with a Wave effect and live color preview](docs/screenshots/lighting.png)
 
-The service has no GUI toolkit: it is a tray icon, a few worker threads and a named pipe. The control
-panel is a separate program that you open from the tray. Closing it gives all of its memory back.
+The background process, `coolrgbd.exe`, handles the hardware and lives in the system tray. The control panel, `coolrgb.exe`, only runs while you have it open. Closing the window leaves lighting and cooling running and frees the panel's memory. The service reports about **9 MB of private memory** on this PC in the screenshots; usage depends on the devices and effects.
 
-## Supported hardware (detected on this PC)
+## What it does
 
-| Device | Lighting | Other |
-|---|---|---|
-| Corsair iCUE Commander Core (AIO pump + 6 fans, 125 LEDs) | yes, one effect per LED port or for the whole hub | pump/fan speed, RPM, liquid temperature |
-| Corsair Vengeance RGB Pro DDR4 x2 (SMBus 0x58, 0x5A) | yes | — |
-| MSI B450 TOMAHAWK onboard RGB (MSI-RGB Super-IO) | yes (single zone, 4-bit color) | — |
-| Corsair Harpoon RGB Wireless (USB cable) | yes | 5 DPI stages + DPI button, polling rate, angle snapping, sleep timer, battery |
-| DesignedByGG Ironclad V3 (EVision 320F:511E) | yes (effects sweep across key columns) | — |
-| Corsair K57 RGB Wireless (Slipstream dongle) | no (retired, not planned) | — |
-| CPU (Ryzen Tctl), NVIDIA GPU | — | temperatures for fan curves |
+- **Lighting:** Off, Static, Breathing, Rainbow, and Wave, with brightness and cycle time controls. Use one effect everywhere or override it per device and per Commander Core LED port. The master switch turns the lights off without losing your effects.
+- **Cooling:** drag points on pump, case-fan, and NVIDIA GPU fan curves, or choose fixed speeds. Curves can follow liquid, CPU, GPU, or the hottest available reading. Quiet, Balanced, and Performance presets apply to all three at once.
+- **Peripherals:** adjust Harpoon DPI stages and polling rate, or use the Ironclad's onboard lighting, profiles, debounce, and polling rate.
+- **Device recovery:** rescan manually, or let the service reconnect after sleep and USB unplug/replug.
 
-The protocols come from OpenRGB, OpenLinkHub and liquidctl; see [docs/PROTOCOLS.md](docs/PROTOCOLS.md).
+<details>
+<summary>Fan controls — live temperatures, RPM, and editable curves</summary>
 
-## Install
+The orange line marks the current temperature. The shaded red area is below the minimum running speed. GPU fans can stop at points set to 0%; Balanced leaves them on the card's automatic control.
 
-1. Quit SignalRGB completely and stop its service, or the two programs will fight over the devices.
-   SignalRGB starts `SignalRgb.Service` at boot; set it to *Manual* in `services.msc` or uninstall SignalRGB.
-2. [PawnIO](https://pawnio.eu) must be installed (needed for RAM, motherboard and CPU temperature).
-3. Build and install from an **administrator** PowerShell:
+![Fan panel showing pump, case-fan, and GPU curves with live readings](docs/screenshots/fans.png)
+
+</details>
+
+<details>
+<summary>Device controls — Ironclad V3 onboard settings</summary>
+
+![Devices panel showing Ironclad V3 lighting, profiles, debounce, and USB polling controls](docs/screenshots/devices.png)
+
+</details>
+
+## Hardware
+
+Tested on this PC. Similar names or a shared manufacturer don't guarantee compatibility.
+
+| Device | Supported controls |
+| --- | --- |
+| Corsair iCUE Commander Core | Lighting for the pump and six fan ports (125 LEDs on this setup), pump/fan speed, RPM, liquid temperature |
+| Corsair Vengeance RGB Pro DDR4 ×2 | Lighting over SMBus, at addresses `0x58` and `0x5A` |
+| MSI B450 TOMAHAWK | Onboard RGB through Nuvoton Super-IO; one zone, 4-bit color |
+| Corsair Harpoon RGB Wireless, connected by USB cable | Lighting, five DPI stages and DPI button, polling rate, angle snapping, sleep timer, battery status |
+| DesignedByGG Ironclad V3 (`320F:511E`) | Lighting across key columns, onboard effects and profiles, debounce, polling rate |
+| AMD Ryzen / NVIDIA GPU | Ryzen Tctl and GPU temperatures for curves; NVIDIA fan control |
+
+The Corsair K57 RGB Wireless via Slipstream is **not supported** and is not planned.
+
+Protocol references and device-specific findings are in [docs/PROTOCOLS.md](docs/PROTOCOLS.md), based on OpenRGB, OpenLinkHub, and liquidctl.
+
+## Build and install
+
+You need Windows, Rust with the MSVC toolchain, and the Visual Studio C++ build tools with a Windows SDK. Install [PawnIO](https://pawnio.eu) for RAM lighting, motherboard lighting, and CPU temperature access. The signed PawnIO modules are included in the repository; the driver still needs to be installed separately.
+
+1. Quit other software controlling these devices, including SignalRGB and iCUE. For SignalRGB, also stop `SignalRgb.Service` and set its startup type to **Manual** in `services.msc`, or uninstall it.
+2. From the repository root, build both executables:
 
    ```powershell
    powershell -ExecutionPolicy Bypass -File scripts\build.ps1
+   ```
+
+3. In an **administrator PowerShell**, install:
+
+   ```powershell
    powershell -ExecutionPolicy Bypass -File scripts\install.ps1
    ```
 
-4. Open **Cool'n RGB** from the Start menu (or click the rainbow ring in the tray). Under **Settings**, tick
-   **Start with Windows**. This creates a Task Scheduler task that starts the service with admin rights at
-   logon, without a UAC prompt.
+   This copies the executables to `C:\Program Files\CoolRGB`, adds a Start menu shortcut, and starts the background process.
 
-To remove it, run `scripts\uninstall.ps1` (add `-KeepSettings` to keep `C:\ProgramData\CoolRGB`).
+4. Open **Cool'n RGB** from the Start menu or the rainbow tray icon. Enable **Settings → Start with Windows** to start the service at logon. This uses Task Scheduler to launch it with administrator rights without a UAC prompt each time.
 
-## Using it
+Changes apply live. There is no separate Save button.
 
-- **Lights on/off**: the switch in the header, or **Lights off** in the tray menu, turns every LED off
-  without losing your effects.
-- **Lighting**: brightness, plus one effect for all devices (Off, Static, Breathing, Rainbow, Wave).
-  **Apply to** lets any device use its own effect.
-- **Fans → Presets**: Quiet, Balanced and Performance set the pump, case fans and GPU in one click.
-  Quiet stops the GPU fans below 55 °C.
-- **Fans**: a pump curve and a fans curve (all 6 fans), or fixed speeds. The temperature source can be
-  liquid, CPU, GPU or the hottest of the three. Drag the points to change a curve. The orange line is the
-  current temperature, and the red band is the area below the minimum speed.
-- **Devices**: what was detected, plus a **Rescan** button. The service also rescans by itself after sleep
-  and when USB devices are unplugged and plugged back in.
+To uninstall, run this from an administrator PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1
+```
+
+Add `-KeepSettings` to preserve your configuration.
 
 ## Fan safety
 
-- The service never sends less than **40 %** to the fans or **70 %** to the pump (`config.rs`).
-- Everything goes to **100 %** above 50 °C liquid or 95 °C CPU, and whenever a curve's temperature sensor
-  is unavailable.
-- Speeds rise immediately and fall by at most 3 % per second.
-- When the service exits, the Commander Core goes back to the profile stored in its own memory (the one
-  iCUE saved). If the service crashes or is killed, the hub does this by itself within about a minute.
-  This was tested.
+The service enforces these limits even when a curve requests a lower speed:
 
-## Files
+- Commander Core fans: **40% minimum**. Pump: **70% minimum**.
+- Pump and case fans go to **100% at 50 °C liquid or 95 °C CPU**, or if the sensor required by their curve is unavailable.
+- Custom GPU control goes to **100% at 85 °C**, or if its curve's sensor is unavailable. Nonzero GPU speeds have a **30% minimum**; 0% returns the card to automatic control so it can stop its fans.
+- Pump and case-fan speeds rise immediately and fall by at most **3 percentage points per second**.
 
-- Settings: `C:\ProgramData\CoolRGB\config.json`. The GUI edits it through the service, and changes apply live.
-- Log: `C:\ProgramData\CoolRGB\daemon.log` (capped at 256 KB).
+On a normal exit, the Commander Core returns to the hardware profile saved by iCUE. On this setup, it also returned to that profile within about a minute after a crash or forced termination. That fallback was tested on this hub.
 
-## Layout
+## Settings and logs
 
-```
-crates/core    device drivers, effects, config, IPC, PawnIO binding
-crates/daemon  coolrgbd.exe: tray icon, device threads, fan control, named pipe server
-crates/gui     coolrgb.exe: egui control panel
-vendor/pawnio  signed PawnIO modules (SmbusPIIX4, LpcIO, AMDFamily17), embedded in the binaries
-```
+| File | Purpose |
+| --- | --- |
+| `C:\ProgramData\CoolRGB\config.json` | Lighting, curves, device overrides, and startup settings |
+| `C:\ProgramData\CoolRGB\daemon.log` | Device and service diagnostics; capped at 256 KB |
 
-Drivers live in `crates/core/src/devices/`, one folder per manufacturer and one module per protocol.
-A protocol module lists the devices it supports in a VID/PID table.
+If the panel can't reach the service, use **Start background service** and accept the administrator prompt. If a device is missing, check the log and try **Devices → Rescan devices**. For Commander Core fans with dark or incorrect LEDs, check the fan type for each LED port under **Devices → Controller**.
 
-```
-corsair/    commander_core.rs, bragi.rs (V2 peripherals), dram.rs (Vengeance RGB Pro)
-evision/    v2.rs (keyboards); mod.rs holds the keyboard settings shared with the GUI
-msi/        superio_rgb.rs (MSI-RGB on Nuvoton Super-IO)
-transport/  smbus.rs (AMD PIIX4), used by any SMBus driver
-```
+## Working on it
 
-Each manufacturer is a Cargo feature (`corsair`, `evision`, `msi`), all on by default. A disabled
-feature compiles none of that driver, and leaves out its PawnIO module. Example for a Corsair-only service:
+| Directory | Contents |
+| --- | --- |
+| `crates/core` | Device protocols, effects, configuration, IPC, sensors, and PawnIO bindings |
+| `crates/daemon` | Tray icon, hardware workers, fan control, and named-pipe server |
+| `crates/gui` | egui control panel; uses shared types without linking device drivers |
+| `vendor/pawnio` | Signed PawnIO modules embedded in the binaries |
 
-```
+Drivers live under `crates/core/src/devices/`, grouped by manufacturer and protocol. Each protocol module lists supported devices by VID/PID. Manufacturer features (`corsair`, `evision`, `msi`) are all enabled by default; disabling one removes its driver code and unused PawnIO modules. For example:
+
+```powershell
 cargo build --release -p coolrgbd --no-default-features --features corsair
 ```
 
-The GUI only uses the shared types, so it never links device drivers.
+RAM animation runs at 10 fps and skips unchanged frames: SMBus writes busy-wait inside PawnIO, so updating RAM has a higher CPU cost than USB lighting. Static colors don't need continuous writes.
 
-Developer examples, run with `cargo run --release -p coolrgb-core --example <name>`:
+Useful examples, run with `cargo run --release -p coolrgb-core --example <name>`:
 
 - `probe`: read-only USB dump.
-- `pawn_test`: temperatures and DRAM/Super-IO detection.
-- `ctl`: pipe client. `ctl status`, `ctl config`, `ctl set file.json`, `ctl quit`, and `ctl handover`
-  (quits without switching the lights back to their hardware profiles).
+- `pawn_test`: temperature readings and DRAM/Super-IO detection.
+- `ctl`: named-pipe client with `status`, `config`, `set file.json`, `quit`, and `handover`. Handover exits without restoring hardware lighting profiles.
