@@ -1,12 +1,20 @@
 # Cool'n RGB
 
-RGB lighting, fan curves, and peripheral settings in a small Windows app, written in Rust.
+A lightweight replacement for SignalRGB and iCUE, focused on saving RAM and keeping background resource usage low. RGB lighting, fan curves, and peripheral settings in one small Windows app, written in Rust.
 
-Built to replace SignalRGB and iCUE on my PC. It controls the Commander Core, RAM, motherboard lighting, keyboard, and mouse from one panel. Hardware support is specific to the devices below; this isn't a general-purpose RGB controller yet.
+SignalRGB used around **500 MB of RAM** on my PC, and iCUE's heavy resource usage was another reason to build this. Cool'n RGB's background service reports about **9 MB of private memory** on this setup in the screenshots. The goal is to keep lighting and cooling running without dedicating hundreds of megabytes of RAM to them.
+
+## Low resource usage first
+
+- **Small background footprint:** `coolrgbd.exe` handles the hardware and lives in the system tray.
+- **Control panel runs only when needed:** closing `coolrgb.exe` frees the panel's memory while lighting and cooling keep running.
+- **Avoid unnecessary work:** RAM lighting skips unchanged frames, and static colors don't need continuous writes.
+
+The memory figures are observations from this PC, not a controlled benchmark using identical memory metrics. Actual RAM and CPU usage depends on the connected devices and effects.
+
+It controls the Commander Core, RAM, motherboard lighting, keyboard, and mouse from one panel. Hardware support is specific to the devices below; this isn't a general-purpose RGB controller yet.
 
 ![Lighting panel with a Wave effect and live color preview](docs/screenshots/lighting.png)
-
-The background process, `coolrgbd.exe`, handles the hardware and lives in the system tray. The control panel, `coolrgb.exe`, only runs while you have it open. Closing the window leaves lighting and cooling running and frees the panel's memory. The service reports about **9 MB of private memory** on this PC in the screenshots; usage depends on the devices and effects.
 
 ## What it does
 
